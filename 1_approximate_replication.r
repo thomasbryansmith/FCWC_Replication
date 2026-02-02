@@ -428,37 +428,39 @@ library(bayestestR)
       labs_dat <- left_join(labs_dat, group_HDI, by = "attribution")
       
       ### Replicate figure 1
-      ggplot(gdat, aes(x=fcwc_given_t, fill = attribution)) +
-        geom_density(color = NA,
-                     alpha = 0.8) +
-        scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
-                           labels = c("0%", "1%", "2%", "3%", "4%", "5%",
-                                      "6%", "7%", "8%", "9%", "10%"),
-                           limits = c(0, 10)) +
-        scale_fill_manual(values = c("#5653ab",
-                                     "#de7ba0",
-                                     "#f6fa66")) + 
-        labs(x = "Posterior Probability (%)",
-             y = "Density",
-             title = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios",
-             subtitle = "Three Overall Posteriors: p = 0.5, 0.75, 1\nRed dashed = median; annotation = 95% HDI") +
-        facet_wrap(~attribution,
-                   ncol = 1, 
-                   scales = "free_y") + 
-          geom_vline(data = labs_dat, 
-                     aes(xintercept = fcwc_given_t), 
-                     color = "red", linetype = "dashed", size = 1) +
-          geom_text(data = labs_dat,
-                    aes(label = paste0("median: ", round(fcwc_given_t, 2),"%\n",
-                                      "95% HDI: [",round(lower_hdi, 2),"%, ",
-                                                   round(upper_hdi, 2),"%]"),
-                        y = dens),
-                    x = 7, hjust = 1, nudge_x = -0.1, family = "serif") +
-          theme_minimal() + 
-        theme(text = element_text(size = 15, family = "serif"),
-              axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
-              axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
-              legend.position = "none",
-              plot.title = element_text(size = 15, face = "bold"),
-              plot.subtitle = element_text(size = 13),
-              strip.text = element_text(size = 13, face = "bold"))
+      png("Fig1_replication.png", width = 1000, height = 750, type = "cairo")
+        ggplot(gdat, aes(x=fcwc_given_t, fill = attribution)) +
+          geom_density(color = NA,
+                       alpha = 0.8) +
+          scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                             labels = c("0%", "1%", "2%", "3%", "4%", "5%",
+                                        "6%", "7%", "8%", "9%", "10%"),
+                             limits = c(0, 10)) +
+          scale_fill_manual(values = c("#5653ab",
+                                       "#de7ba0",
+                                       "#f6fa66")) + 
+          labs(x = "Posterior Probability (%)",
+               y = "Density",
+               title = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios",
+               subtitle = "Three Overall Posteriors: p = 0.5, 0.75, 1\nRed dashed = median; annotation = 95% HDI") +
+          facet_wrap(~attribution,
+                     ncol = 1, 
+                     scales = "free_y") + 
+            geom_vline(data = labs_dat, 
+                       aes(xintercept = fcwc_given_t), 
+                       color = "red", linetype = "dashed", size = 1) +
+            geom_text(data = labs_dat,
+                      aes(label = paste0("median: ", round(fcwc_given_t, 2),"%\n",
+                                        "95% HDI: [",round(lower_hdi, 2),"%, ",
+                                                     round(upper_hdi, 2),"%]"),
+                          y = dens),
+                      x = 7, hjust = 1, nudge_x = -0.1, family = "serif", size = 7) +
+            theme_minimal() + 
+          theme(text = element_text(size = 27, family = "serif"),
+                axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+                axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+                legend.position = "none",
+                plot.title = element_text(size = 30, face = "bold"),
+                plot.subtitle = element_text(size = 20),
+                strip.text = element_text(size = 25, face = "bold"))
+      dev.off()
