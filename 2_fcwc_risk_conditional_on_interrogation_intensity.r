@@ -384,117 +384,206 @@ library(truncdist)
     
 #==============================================================================#
 
-  # Accounting for the very real likelihood that the likelihood of a single
-  # interrogation technique is inconsequential, and we should be modelling
-  # the intensity of the interrogation.
+  # We could argue that the probability of a single interrogation technique 
+  # is inconsequential, and we should be modelling the intensity of the interrogation.
     
+    ## Alternatively, we can use the number of interrogation tactics,
+    ## or some combination of both.
+    ## This article might give us something to work from:
     ## Kaplan & Cutler (2021) Co-occurrences among interrogation tactics in actual
     ## criminal investigations. Psychology, Crime & Law, 28(1): 1-19.
     
-    ## 25 unique tactics encoded by Kaplan & Cutler, though they only observe 18.
-    ## So we will set the theoretical maximum to 18.
-    ## They report of 5 or 6 tactics per observation, but these cases were all
-    ## severe (homicide, robbery and fraud, sexual assault, sex crimes, terrorism).
-    
-    ## Simulating plausible range of latent intensity
+    ## Simulating plausible range of latent intensity based on interrogation length
       
       ### We have already estimated the FCWC base rate
-      pi_s <- fcwc_base_rate
+      pi_fcwc <- fcwc_base_rate
     
       ### plausible interrogation intensity parameters
-      mu_1 <- log(0.95 * 6)   # FCWC mean interrogation tactic count is equal
-                              # to the average number of interrogation tactics 
-                              # multiplied by the probability of a FCWC case
-                              # involving an interrogation, ≈ 6 * 0.95.
-                              # This is effectively a revised sensitivity.
+      mu_1 <- log(16.23)  # Average length of an FCWC interrogation is 16.3 hours.
+      sigma_1 <- 15.05    # Standard deviation for this estimate is 15.05 hours.
+                          # This is effectively a revised sensitivity. (N = 44)
+                          # Leo, Richard A. (2004). The Problem of False 
+                          # Confessions in the Post-DNA World. N.C.L.Rev 891.
       
-      mu_0 <- log(0.14 * 6)   # non-FCWC mean interrogation tactic count is equal
-                              # to the average number of interrogation tactics
-                              # multiplied by the probability of any case
-                              # involving an interrogation, ≈ 6 * 0.14.
-                              # While it should be noted that "non-FCWC" is
-                              # not the same as "any case" (it refers to true 
-                              # confession and conviction), voluntary admissions
-                              # presumably require no interrogation and make up
-                              # a non-trivial proportion of confession-convictions.
-                              # This will "drive down" the number of tactics in
-                              # non-FCWC cases. This is revised specificity.
-      
-      sigma_I <- 1            # heterogeneity in intensity (standard deviation),
-                              # we use the same value as Moutgos & Adams (2026).
-      
-      #### Note: we are assuming that FCWC interrogations are ~1.5x as intense.
-      #### This will need to be revised so that it is in line with the literature.
-      
+      mu_0 <- log(1.6)   # Average length of a non-FCWC interrogation is 1.6 hours.
+      sigma_0 <- 0.89    # Standard deviation for this estimate is 0.89 hours.
+                         # This is effectively specificity. (N = 601)
+                         # Kassin, Saul M., Leo, Richard, A., Meissner, 
+                         # Christian A., et al.(2007). Police Interviewing and
+                         # Interrogation: A Self-Report Survey of Police Practices
+                         # and Beliefs. Law and Human Behavior, 31: 381 - 400.
+        
       ### Monte Carlo to approximate likelihoods
       #### Define function to generate average likelihoods for each level of K
-      #### Poisson-lognormal mixture:
-      likelihood_K <- function(k, mu, sigma, n_mc = 50000) {
-        I <- rnorm(n_mc, mu, sigma) # simulated (plausible) distribution of interrogation intensity
-        lambda <- exp(I)
-        mean(dpois(k, lambda)) # average on the Poisson
+      #### Truncated lognormal distribution:
+      rlnorm_trunc <- function(n, meanlog, sdlog, lower = 0, upper = 48) {
+        
+        if (lower < 0) stop("Lower bound must be >= 0 for lognormal")
+        
+        # CDF bounds
+        p_lower <- if (lower == 0) 0 else plnorm(lower, meanlog, sdlog)
+        p_upper <- plnorm(upper, meanlog, sdlog)
+        
+        if (p_upper <= p_lower)
+          stop("Invalid bounds: upper CDF <= lower CDF")
+        
+        # Draw from truncated uniform
+        u <- runif(n, min = p_lower, max = p_upper)
+        
+        # Inverse CDF
+        qlnorm(u, meanlog, sdlog)
       }
       
-      likelihood_K_full <- function(k, mu, sigma, n_mc = 50000) {
-        I <- rnorm(n_mc, mu, sigma) # simulated (plausible) distribution of interrogation intensity
-        lambda <- exp(I)
-        dpois(k, lambda) # average on the Poisson
+      
+      #### Monte Carlo likelihood function
+      ##### Incorporates uncertainty of the interrogation hours
+      mc_likelihood_H <- function(
+        h,
+        n_mc,
+        meanlog,
+        sdlog,
+        upper = 48
+          ) {
+            
+            sims <- rlnorm_trunc(
+              n = n_mc,
+              meanlog = meanlog,
+              sdlog = sdlog,
+              upper = upper
+            )
+            
+            # Kernel density estimate evaluated at h
+            dens <- density(sims, from = 0, to = upper, n = 2048)
+            
+            approx(dens$x, dens$y, xout = h, rule = 2)$y
       }
       
-      #### Calculate posterior FCWC probability given k instances of a tactic
-      posterior_fcwc <- function(k, pi, mu1, mu0, sigma) {
-        
-        L1 <- likelihood_K(k, mu1, sigma) # P(K = k|FCWC)
-        L0 <- likelihood_K(k, mu0, sigma) # P(K = k|¬FCWC) 
-        
-        # L1 and L0 use difference probability distributions / point estimates
-        # because we have reason to believe that FCWC and non-FCWC are subject
-        # to different interrogation intensities.
-        # Pi is P(FCWC), as estimated via Mourtgos & Adams' (2026) joint probability.
-        
-        (L1 * pi) / (L1 * pi + L0 * (1 - pi)) # Bayes' Theorem
+      mc_likelihood_H_dist <- function(
+        h,
+        n_mc = 20000,
+        meanlog,
+        sdlog,
+        upper = 36,
+        bw = "nrd0"
+          ) {
+            
+            sims <- rlnorm_trunc(
+              n = n_mc,
+              meanlog = meanlog,
+              sdlog = sdlog,
+              upper = upper
+            )
+            
+            dens <- density(
+              sims,
+              from = 0,
+              to = upper,
+              n = 2048,
+              bw = bw
+            )
+            
+            # Return likelihood at h (single draw from the KDE)
+            approx(dens$x, dens$y, xout = h, rule = 2)$y
       }
       
+      mc_likelihood_H_distribution <- function(
+        h,
+        n_rep = 1000,     # number of likelihood draws
+        n_mc = 5000,      # MC size per draw
+        meanlog,
+        sdlog,
+        upper = 36
+          ) {
+            
+            replicate(
+              n_rep,
+              mc_likelihood_H_dist(
+                h = h,
+                n_mc = n_mc,
+                meanlog = meanlog,
+                sdlog = sdlog,
+                upper = upper
+              )
+            )
+          }
+          
+      #### Define Bayes theorem with stochastic likelihoods
+      posterior_fcwc_given_H_mc <- function(
+        h,
+        pi,
+        mu1, sigma1,
+        mu0, sigma0,
+        n_mc = 20000,
+        upper = 48
+          ) {
+            
+            L1 <- mc_likelihood_H(h, n_mc, mu1, sigma1, upper)
+            L0 <- mc_likelihood_H(h, n_mc, mu0, sigma0, upper)
+            
+            (L1 * pi) / (L1 * pi + L0 * (1 - pi))
+      }
       
       #### Visualize likelihood distributions for FCWC v. non-FCWC
       ##### Ridge Plot
-      n_tactics <- seq(1, 18, by = 1)
+      hour_ranges_r <- seq(6, 48, by = 2)
       
-      L1_dist <- lapply(n_tactics, function(x) likelihood_K_full(x, mu_1, sigma_I))
-      L0_dist <- lapply(n_tactics, function(x) likelihood_K_full(x, mu_0, sigma_I))
+      L1_dist <- lapply(hour_ranges_r, function(h) mc_likelihood_H_distribution(h, 1000, 5000, mu_1, sigma_1, 48))
+      L0_dist <- lapply(hour_ranges_r, function(h) mc_likelihood_H_distribution(h, 1000, 5000, mu_0, sigma_0, 48))
       
+      png("FigS1_Likelihood_function_latent_intensity_w_stochasticity.png", 1000, 500, type = "cairo")
       data.frame("FCWC" = c(rep("FCWC", length(unlist(L1_dist))),
                             rep("Non-FCWC", length(unlist(L0_dist)))),
-                 "NTact" = c(rep(n_tactics, each = length(L1_dist[[1]])),
-                             rep(n_tactics, each = length(L0_dist[[1]]))),
+                 "NTact" = c(rep(hour_ranges_r, each = length(L1_dist[[1]])),
+                             rep(hour_ranges_r, each = length(L0_dist[[1]]))),
                  "likelihood" = c(unlist(L1_dist),
                                   unlist(L0_dist))) %>%
         ggplot(aes(x = likelihood, y = factor(NTact), fill = factor(NTact))) +
-        geom_density_ridges(scale = 5) +
-        facet_wrap(~FCWC)
-      theme_ridges()
+        geom_density_ridges(scale = 5, color = NA) +
+        scale_fill_viridis_d(option = "D") +
+        labs(title = "Figure S1.",
+             subtitle = "Simulated likelihood function for interrogation length including random distributions\nat each hourly interval",
+             y = "Interrogation Hours",
+             x = "Likelihood, P(h|θ)",
+             caption = "We define separate likelihood functions conditional upon the mean, μ, and standard deviation, σ, for hours interrogated for FCWC\nand non-FCWC respectively. This is more appropriate given that prior literature has observed different average interrogation lengths\ndependent on FCWC. Per Kassin et al. (2007), the average length of an interrogation is approximately 1.6 hours (σ = 0.89).Whereas,\nper Leo (2004), the average length of a FCWC interrogation is 16.23 hours (σ = 15.05). We retain the uncertainty of these estimates\nvia Monte Carlo marginalization, treating the interrogation hours as stochastic. Hours 2 and 4 are omitted from this visualization\nfor clarity, a more complete distributional comparison is reported in the main text.") +
+        coord_flip() +
+        facet_wrap(~FCWC) + 
+        theme_classic() + 
+        theme(legend.position = "none",
+              text = element_text(size = 27, family = "serif"),
+              axis.text.x = element_text(size = 15),
+              axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+              axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+              plot.title = element_text(size = 27,
+                                        margin = margin(b = 5, unit = "pt")),
+              plot.subtitle = element_text(size = 23, 
+                                           margin = margin(b = 20, unit = "pt")),
+              plot.caption = element_text(size = 17, hjust = 0, 
+                                          margin = margin(t = 20, unit = "pt")),
+              legend.key.spacing.y = unit(1.0, "cm"))
+      dev.off()
+    
       
       ##### Line Graph
-      n_tactics <- seq(1, 18, by = 1)
-             
-      L1_dist <- unlist(lapply(n_tactics, function(x) likelihood_K(x, mu_1, sigma_I)))
-      L0_dist <- unlist(lapply(n_tactics, function(x) likelihood_K(x, mu_0, sigma_I)))
+      L1_dist_pe <- unlist(lapply(hour_ranges, function(x) mc_likelihood_H(x, 20000, mu_1, sigma_I)))
+      L0_dist_pe <- unlist(lapply(hour_ranges, function(x) mc_likelihood_H(x, 20000, mu_0, sigma_I)))
       
-      png("Fig1a_Likelihood_function_latent_intensity.png", 1000, 500, type = "cairo")
-      data.frame("FCWC" = c(rep("FCWC", length(L1_dist)),
-                            rep("Non-FCWC", length(L0_dist))),
-                 "NTact" = c(n_tactics,
-                             n_tactics),
-                 "likelihood" = c(L1_dist,
-                                  L0_dist)) %>%
+      png("Fig2a_Likelihood_function_interrogation_hours.png", 1000, 500, type = "cairo")
+      data.frame("FCWC" = c(rep("FCWC", length(L1_dist_pe)),
+                            rep("Non-FCWC", length(L0_dist_pe))),
+                 "NTact" = c(hour_ranges,
+                             hour_ranges),
+                 "likelihood" = c(L1_dist_pe,
+                                  L0_dist_pe)) %>%
         ggplot(aes(x = NTact, y = likelihood, color = FCWC)) +
         geom_point(size = 2) +
-        geom_line(size = 1) +
-        labs(title = "Figure 1a.",
-             subtitle = "Simulated likelihood function for latent interrogation intensity",
+        geom_line(linewidth = 1) +
+        scale_x_continuous(breaks = hour_ranges) +
+        labs(title = "Figure 2a.",
+             subtitle = "Simulated likelihood function for interrogation length",
+             caption = "We define separate likelihood functions conditional upon the mean, μ, and standard deviation, σ, for hours\ninterrogated for FCWC and non-FCWC respectively. This is more appropriate given that prior literature has\nobserved different average interrogation lengths dependent on FCWC. Per Kassin et al. (2007), the average\nlength of an interrogation is approximately 1.6 hours (σ = 0.89).Whereas, per Leo (2004), the average length\nof an FCWC interrogation is 16.23 hours (σ = 15.05). We retain the uncertainty of these estimates via Monte\nCarlo marginalization, treating the interrogation hours as stochastic. See Figure S1 for hourly distributions.",
              color = NULL,
-             y = "P(K=k|FCWC)",
-             x = "Number of Interrogation Tactics") +
+             y = "Likelihood, P(h|θ)",
+             x = "Interrogation Hours") +
         theme_classic() + 
         theme(text = element_text(size = 27, family = "serif"),
               axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
@@ -508,26 +597,67 @@ library(truncdist)
               legend.key.spacing.y = unit(1.0, "cm"))
       dev.off()
       
-      #### Visualize posterior distributions for each
-      png("Fig1b_Interrogation_intensity_figure.png", 1000, 500, type = "cairo")
-      data.frame("NTact" = factor(rep(1:6, each = length(pi_s))),
-                 "posterior" = unlist(lapply(1:6, 
-                                             function(x) 
-                                               posterior_fcwc(x, pi_s, 
-                                                              mu_1, mu_0, 
-                                                              sigma_I)))) %>%
-        ggplot(aes(x = posterior, fill = NTact)) +
-        geom_density(alpha = 0.8, color = NA) + 
-        scale_x_continuous(breaks = seq(0, 0.15, by = 0.01),
-                           labels = paste0(0:15,"%"),
-                           limits = c(0, 0.15)) +
+      ### Visualize posterior distributions for each hour of interrogation
+      #### Draw posteriors for P(FCWC|H)
+      hour_ranges <- c(1.6, 16.23)
+      
+      posterior_draws <- lapply(hour_ranges, function(h){
+        sapply(sample(pi_fcwc, 1000), function(pi_s) {
+          posterior_fcwc_given_H_mc(
+            h = h,
+            pi = pi_s,
+            mu1 = mu_1,  sigma1 = sigma_1,
+            mu0 = mu_0,  sigma0 = sigma_0
+          )
+        })})
+      
+      #### Visualization
+      gdat <- data.frame("NTact" = factor(rep(hour_ranges, each = length(posterior_draws[[1]])),
+                                          labels = paste0(hour_ranges, " Hours")),
+                         "posterior" = unlist(posterior_draws))
+      
+      ### Calculate group medians
+      group_medians <- gdat %>%
+        group_by(NTact) %>%
+        summarise(median = median(posterior, na.rm = TRUE))
+      
+      ### Calculate density by group
+      group_density <- gdat %>%
+        group_by(NTact) %>%
+        summarise(dens_y = max(density(posterior)$y) * 0.8,
+                  dens_x = max(density(posterior)$x) * 0.95)
+      
+      ### Calculate HDI by group
+      group_HDI <- gdat %>%
+        group_by(NTact) %>%
+        summarise(
+          lower_hdi = hdi(posterior, ci = 0.95)[[2]],
+          upper_hdi = hdi(posterior, ci = 0.95)[[3]])
+      
+      ### Merge labelling data
+      labs_dat <- left_join(group_medians, group_density, by = "NTact")
+      labs_dat <- left_join(labs_dat, group_HDI, by = "NTact")
+      
+      png("Fig2b_Interrogation_intensity_figure.png", 1000, 500, type = "cairo")
+        ggplot(gdat, aes(x = posterior)) +
+        geom_density(alpha = 0.8, color = "black", fill = "grey20") + 
         scale_fill_viridis_d() +
         labs(y = "Density",
              x = "P(FCWC)",
-             title = "Figure 1b.",
-             subtitle = "Posterior distribution of FCWC risk by the number of tactics employed during interrogation",
+             title = "Figure 2b.",
+             subtitle = "Posterior distribution of FCWC risk by length of interrogation",
              fill = "Tactics",
              caption = "") + 
+        facet_wrap(~NTact, scale = "free") +
+        geom_vline(data = labs_dat, 
+                     aes(xintercept = median), 
+                     color = "red", linetype = "dashed", size = 1) +
+        geom_text(data = labs_dat,
+                  aes(label = paste0("median: ", round(median, 3),"\n",
+                                     "95% HDI: [",round(lower_hdi, 3),", ",
+                                     round(upper_hdi, 3),"]"),
+                      y = dens_y, x = dens_x),
+                  hjust = 1, family = "serif", size = 7) +
         theme_classic() + 
         theme(text = element_text(size = 27, family = "serif"),
               axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
@@ -541,3 +671,52 @@ library(truncdist)
               legend.title = element_text(margin = margin(b = 0.3, unit = "cm")),
               legend.key.spacing.y = unit(0.3, "cm"))
       dev.off()
+
+      
+      hour_ranges <- 1:48
+      posterior_draws <- lapply(hour_ranges, function(h){
+        sapply(sample(pi_fcwc, 1000), function(pi_s) {
+          posterior_fcwc_given_H_mc(
+            h = h,
+            pi = pi_s,
+            mu1 = mu_1,  sigma1 = sigma_1,
+            mu0 = mu_0,  sigma0 = sigma_0
+          )
+        })})
+      
+      png("Fig2c_Posterior_distributions_gam.png", 1000, 500, type = "cairo")
+      data.frame("FCWC" = rep(hour_ranges, each = length(posterior_draws[[1]])),
+                 "likelihood" = unlist(posterior_draws)) %>%
+        ggplot(aes(y = likelihood, x = FCWC)) +
+        geom_point(alpha = 0.05) +
+        geom_smooth(color = "black") +
+        scale_fill_viridis_d(option = "D") +
+        labs(title = "Figure 2c.",
+             subtitle = "Posterior probability distributions for each hour of interrogation with fitted Generalized\nAdditive Model",
+             x = "Interrogation Hours",
+             y = "P(FCWC|H)") +
+        xlim(0, 36) +
+        theme_classic() + 
+        theme(legend.position = "none",
+              text = element_text(size = 27, family = "serif"),
+              axis.text.x = element_text(size = 15),
+              axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+              axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+              plot.title = element_text(size = 27,
+                                        margin = margin(b = 5, unit = "pt")),
+              plot.subtitle = element_text(size = 23, 
+                                           margin = margin(b = 20, unit = "pt")),
+              plot.caption = element_text(size = 17, hjust = 0, 
+                                          margin = margin(t = 20, unit = "pt")),
+              legend.key.spacing.y = unit(1.0, "cm"))
+      dev.off()
+      
+
+
+### IMPORTANT NOTE FOR LATER:
+### This Monte Carlo approximated likelihoods / truncated lognormal / Bayes'
+### theorem with stochastic likelihoods is encoding manually, which is VERY
+### unconventional and probably not best practice (invites errors).
+### This will need to be replicated using the BRMS package at a later date.
+### I am fairly confident in the code, but I'd rather do the replication for...
+### posterity (bad Bayesian joke).

@@ -441,8 +441,9 @@ library(bayestestR)
                                        "#f6fa66")) + 
           labs(x = "Posterior Probability (%)",
                y = "Density",
-               title = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios",
-               subtitle = "Three Overall Posteriors: p = 0.5, 0.75, 1\nRed dashed = median; annotation = 95% HDI") +
+               title = "Figure 1.",
+               subtitle = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios\n(Replication of Mourtgos and Adams, 2026)",
+               caption = "Three Overall Posteriors: p = 0.5, 0.75, 1\nRed dashed = median; annotation = 95% HDI") +
           facet_wrap(~attribution,
                      ncol = 1, 
                      scales = "free_y") + 
@@ -454,13 +455,20 @@ library(bayestestR)
                                         "95% HDI: [",round(lower_hdi, 2),"%, ",
                                                      round(upper_hdi, 2),"%]"),
                           y = dens),
-                      x = 7, hjust = 1, nudge_x = -0.1, family = "serif", size = 7) +
-            theme_minimal() + 
+                      x = 9, hjust = 1, nudge_x = -0.1, family = "serif", size = 7) +
+          theme_classic() + 
           theme(text = element_text(size = 27, family = "serif"),
                 axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
                 axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
-                legend.position = "none",
-                plot.title = element_text(size = 30, face = "bold"),
-                plot.subtitle = element_text(size = 20),
-                strip.text = element_text(size = 25, face = "bold"))
-      dev.off()
+                plot.title = element_text(size = 26,
+                                          margin = margin(b = 5, unit = "pt")),
+                plot.subtitle = element_text(size = 23, 
+                                             margin = margin(b = 20, unit = "pt")),
+                plot.caption = element_text(size = 17, hjust = 0, 
+                                            margin = margin(t = 20, unit = "pt")),
+                strip.text = element_text(size = 23,
+                                          margin = margin(t = 10, b = 10, 
+                                                          unit = "pt")),
+                legend.position = "none")
+        dev.off()
+      

@@ -133,7 +133,7 @@ library(truncdist)
 
 #==============================================================================#
     
-  # Narrowing focus to wrongful convictions, P(FC|WC) rather than P(FCWC) = P(WC) * P(FC|WC)
+    # Narrowing focus to wrongful convictions, P(FC|WC) rather than P(FCWC) = P(WC) * P(FC|WC)
     
     ## Figure 2. Posterior distribution of P(FC|WC, T) with attribution
     
@@ -207,7 +207,7 @@ library(truncdist)
     labs_dat <- left_join(labs_dat, group_HDI, by = "attribution")
     
     ### Figure 2
-    png("Fig2_FC_cond_WC_Risk.png", width = 1000, height = 750, type = "cairo")
+    png("Fig3_FC_cond_WC_Risk.png", width = 1000, height = 750, type = "cairo")
     ggplot(gdat, aes(x=fcwc_given_t, fill = attribution)) +
       geom_density(color = NA,
                    alpha = 0.8) +
@@ -218,7 +218,7 @@ library(truncdist)
                                    "#f6fa66")) + 
       labs(x = "Posterior Probability (%)",
            y = "Density",
-           title = "Figure 2.",
+           title = "Figure 3.",
            subtitle = "Posterior distribution of FC|WC risk across all tactic scenarios",
            caption = "Posteriors represent the probability of false confession conditional on wrongful conviction and interrogation tactic, P(FC|WC, T),\nas opposed to the probability of false confession-wrongful conviction conditional upon interrogation tactic, or P(FCWC|T).\nIntuitively, P(FCWC|T) represents an average treatment effect (ATE), where P(FC|WC, T) represents the treatment on treated (ATT).\nThree Overall Posteriors: p = 0.5, 0.75, 1. Red dashed = median; annotation = 95% HDI.") +
       facet_wrap(~attribution,
