@@ -1,0 +1,810 @@
+# ============================================================================
+# FULL ANALYSIS: Three Alternative Models for False Confession Risk
+# Response to Mourtgos & Adams (2026)
+# 
+# Authors: May, Smith, et al.
+# Date: February 2026
+#
+# This script reproduces all three models, the duration extension,
+# the country-level sensitivity analysis, and all figures.
+# ============================================================================
+
+# --- Setup -------------------------------------------------------------------
+set.seed(42)
+N_SIM <- 100000
+
+if (!require(ggplot2, quietly = TRUE)) install.packages("ggplot2", repos = "https://cran.r-project.org")
+if (!require(patchwork, quietly = TRUE)) install.packages("patchwork", repos = "https://cran.r-project.org")
+if (!require(dplyr, quietly = TRUE)) install.packages("dplyr", repos = "https://cran.r-project.org")
+if (!require(tidyr, quietly = TRUE)) install.packages("tidyr", repos = "https://cran.r-project.org")
+if (!require(scales, quietly = TRUE)) install.packages("scales", repos = "https://cran.r-project.org")
+if (!require(writexl, quietly = TRUE)) install.packages("writexl", repos = "https://cran.r-project.org")
+
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(scales)
+library(writexl)
+
+# --- Theme -------------------------------------------------------------------
+theme_paper <- theme_minimal(base_size = 11, base_family = "serif") +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, colour = "grey40"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour = "grey90"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 9),
+    legend.text = element_text(size = 8),
+    strip.text = element_text(face = "bold")
+  )
+theme_set(theme_paper)
+
+# --- Helper functions --------------------------------------------------------
+logit <- function(p) log(p / (1 - p))
+expit <- function(x) 1 / (1 + exp(-x))
+
+ci_text <- function(x, digits = 4) {
+  sprintf("[%s, %s]", 
+          formatC(quantile(x, 0.025), format = "f", digits = digits),
+          formatC(quantile(x, 0.975), format = "f", digits = digits))
+}
+
+# Truncated lognormal density
+dtlnorm <- function(x, meanlog, sdlog, lower = 0.01, upper = 48) {
+  d <- dlnorm(x, meanlog, sdlog)
+  norm_const <- plnorm(upper, meanlog, sdlog) - plnorm(lower, meanlog, sdlog)
+  d <- ifelse(x >= lower & x <= upper, d / norm_const, 0)
+  return(d)
+}
+
+# Convert mean/sd to lognormal parameters
+moment_to_lnorm <- function(m, s) {
+  sigma2 <- log(1 + (s / m)^2)
+  mu <- log(m) - sigma2 / 2
+  list(meanlog = mu, sdlog = sqrt(sigma2))
+}
+
+cat(paste0(rep("=", 70), collapse = ""), "\n")
+cat("FULL ANALYSIS: Three Alternative Models\n")
+cat(rep("=", 70), "\n\n")
+
+# ============================================================================
+# DATA
+# ============================================================================
+
+studies <- data.frame(
+  author = c("Gudjonsson & Sigurdsson", "Sigurdsson & Gudjonsson",
+             "Gudjonsson et al.", "Gudjonsson et al.",
+             "Gudjonsson et al.", "Gudjonsson et al.",
+             "Gudjonsson et al.", "Gudjonsson et al.",
+             "Viljoen et al.", "Malloy et al.", "Redlich et al."),
+  year = c("1994", "1996", "2004a", "2004b", "2006", "2009",
+           "2019", "2016", "2005", "2014", "2010"),
+  N = c(229, 509, 268, 165, 10192, 2726, 386, 2987, 1896, 193, 1249),
+  n_fc = c(27, 62, 10, 2, 1869, 375, 129, 434, 138, 33, 274),
+  p_fc = c(0.120, 0.120, 0.037, 0.012, 0.186, 0.138, 0.334, 0.147, 0.073, 0.171, 0.220),
+  population = c("Prisoners", "Prisoners", "Community", "Community",
+                 "Juveniles", "Juveniles", "Prisoners", "Juveniles",
+                 "Juveniles", "Juv_incarc", "Community"),
+  country = c("Iceland", "Iceland", "Iceland", "Iceland", "Iceland",
+              "7 European", "Scotland", "Iceland", "Canada", "USA", "USA"),
+  region = c("Non-US", "Non-US", "Non-US", "Non-US", "Non-US",
+             "Non-US", "Non-US", "Non-US", "Non-US", "US", "US"),
+  stringsAsFactors = FALSE
+)
+
+studies$label <- paste0(studies$author, " (", studies$year, ")")
+studies$logit_fc <- logit(pmax(pmin(studies$p_fc, 0.999), 0.001))
+studies$weight <- sqrt(studies$N)
+
+cat("INPUT DATA:\n")
+cat(sprintf("  %-35s N=%6d  n_FC=%5d  P=%.3f  [%s, %s]\n",
+            studies$label, studies$N, studies$n_fc, studies$p_fc,
+            studies$population, studies$country))
+cat(sprintf("\nTotal N: %s\n", format(sum(studies$N), big.mark = ",")))
+cat(sprintf("Weighted mean: %.4f\n", sum(studies$n_fc) / sum(studies$N)))
+cat(sprintf("Simple mean: %.4f\n\n", mean(studies$p_fc)))
+
+# ============================================================================
+# MODEL (i): P(FC | Interrogated) — Hierarchical Bayesian Meta-Analysis
+# ============================================================================
+
+cat(rep("=", 70), "\n")
+cat("MODEL (i): P(FC | Interrogated)\n")
+cat(rep("=", 70), "\n\n")
+
+# --- Hierarchical model by population ---------------------------------------
+populations <- unique(studies$population)
+
+# Compute population-level parameters
+pop_params <- studies %>%
+  group_by(population) %>%
+  summarise(
+    n_studies = n(),
+    total_N = sum(N),
+    total_fc = sum(n_fc),
+    weighted_p = sum(n_fc) / sum(N),
+    mu_logit = weighted.mean(logit_fc, weight),
+    tau = ifelse(n() > 1, max(sd(logit_fc), 0.15), 0.30),
+    .groups = "drop"
+  )
+
+# Grand mean and between-population variance
+mu_grand <- weighted.mean(studies$logit_fc, studies$weight)
+tau_between <- sd(pop_params$mu_logit)
+tau_within_vals <- studies %>%
+  group_by(population) %>%
+  filter(n() > 1) %>%
+  summarise(tau = sd(logit_fc), .groups = "drop")
+tau_within <- mean(tau_within_vals$tau)
+
+cat(sprintf("Hierarchical parameters:\n"))
+cat(sprintf("  mu_grand (logit): %.4f  ->  P = %.4f\n", mu_grand, expit(mu_grand)))
+cat(sprintf("  tau_between: %.4f\n", tau_between))
+cat(sprintf("  tau_within: %.4f\n\n", tau_within))
+
+# --- Population-specific posteriors ------------------------------------------
+pop_posteriors <- list()
+for (pop in populations) {
+  pp <- pop_params %>% filter(population == pop)
+  samples <- expit(rnorm(N_SIM, pp$mu_logit, pp$tau))
+  pop_posteriors[[pop]] <- samples
+}
+
+# --- Overall posterior (hierarchical) ----------------------------------------
+pop_effects <- rnorm(N_SIM, 0, tau_between)
+within_noise <- rnorm(N_SIM, 0, tau_within)
+overall_posterior <- expit(mu_grand + pop_effects + within_noise)
+
+cat("POPULATION-SPECIFIC POSTERIORS:\n")
+cat(sprintf("  %-20s Median=%6.4f  95%% CI %s\n",
+            "Overall", median(overall_posterior), ci_text(overall_posterior)))
+for (pop in populations) {
+  s <- pop_posteriors[[pop]]
+  cat(sprintf("  %-20s Median=%6.4f  95%% CI %s\n",
+              pop, median(s), ci_text(s)))
+}
+cat(sprintf("\n  Overall / M&A: %.1fx\n\n", median(overall_posterior) / 0.013))
+
+# --- Figure 5: Model (i) ----------------------------------------------------
+
+# Panel (a): Forest plot
+fig5a_data <- studies %>%
+  mutate(
+    ci_lo = p_fc - 1.96 * sqrt(p_fc * (1 - p_fc) / N),
+    ci_hi = p_fc + 1.96 * sqrt(p_fc * (1 - p_fc) / N),
+    ci_lo = pmax(ci_lo, 0),
+    ci_hi = pmin(ci_hi, 1)
+  ) %>%
+  arrange(p_fc) %>%
+  mutate(order = row_number())
+
+pop_colours <- c("Prisoners" = "#e74c3c", "Community" = "#3498db",
+                 "Juveniles" = "#2ecc71", "Juv_incarc" = "#f39c12")
+
+fig5a <- ggplot(fig5a_data, aes(x = p_fc, y = reorder(label, p_fc), colour = population)) +
+  geom_point(aes(size = N), alpha = 0.8) +
+  geom_errorbarh(aes(xmin = ci_lo, xmax = ci_hi), height = 0.3, linewidth = 0.6) +
+  geom_vline(xintercept = median(overall_posterior), linetype = "dashed", 
+             colour = "grey30", linewidth = 0.7) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_colour_manual(values = pop_colours, name = "Population") +
+  scale_size_continuous(range = c(2, 8), name = "N", labels = comma) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  labs(x = "P(FC | Interrogated)", y = NULL,
+       title = "(a) Self-Reported False Confession Rates") +
+  annotate("text", x = median(overall_posterior) + 0.01, y = 1.5,
+           label = sprintf("Overall median = %.1f%%", median(overall_posterior) * 100),
+           hjust = 0, size = 3, colour = "grey30") +
+  annotate("text", x = 0.013 + 0.005, y = 0.8,
+           label = "M&A = 1.3%", hjust = 0, size = 3, colour = "purple")
+
+# Panel (b): Population posteriors
+pop_post_df <- bind_rows(
+  data.frame(population = "Overall", value = overall_posterior[1:50000]),
+  do.call(rbind, lapply(names(pop_posteriors), function(p) {
+    data.frame(population = p, value = pop_posteriors[[p]][1:50000])
+  }))
+) %>%
+  filter(value < quantile(value, 0.98))
+
+fig5b <- ggplot(pop_post_df, aes(x = value, fill = population)) +
+  geom_density(alpha = 0.35, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = c(pop_colours, "Overall" = "grey50"), name = "Population") +
+  scale_x_continuous(labels = percent_format(accuracy = 1), limits = c(0, 0.6)) +
+  labs(x = "P(FC | Interrogated)", y = "Density",
+       title = "(b) Posterior Distributions by Population")
+
+fig5 <- fig5a + fig5b + plot_layout(widths = c(1.2, 1))
+ggsave("C:/Users/bmay/Desktop/R_fig5_model_i.png", fig5, width = 14, height = 6, dpi = 300)
+cat("Saved: R_fig5_model_i.png\n")
+
+# ============================================================================
+# MODEL (i) DURATION EXTENSION: P(FC | Interrogated, Duration)
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("MODEL (i) DURATION EXTENSION\n")
+cat(rep("=", 70), "\n\n")
+
+# Duration parameters
+fc_params <- moment_to_lnorm(16.32, 15.05)   # Drizin & Leo 2004
+nfc_params <- moment_to_lnorm(1.6, 0.89)     # Kassin et al. 2007
+
+hours <- seq(0.1, 24, by = 0.1)
+
+# Monte Carlo with uncertainty propagation
+n_mc <- 20000
+base_rate_samples <- sample(overall_posterior, n_mc, replace = TRUE)
+
+# Perturb duration parameters
+fc_mean_samples <- rnorm(n_mc, 16.32, 1.5)
+fc_sd_samples <- abs(rnorm(n_mc, 15.05, 1.5))
+nfc_mean_samples <- rnorm(n_mc, 1.6, 0.15)
+nfc_sd_samples <- abs(rnorm(n_mc, 0.89, 0.10))
+
+# Compute P(FC|Interrogated, h) for each hour
+duration_results <- matrix(NA, nrow = length(hours), ncol = n_mc)
+
+for (i in seq_len(n_mc)) {
+  fc_p <- moment_to_lnorm(fc_mean_samples[i], fc_sd_samples[i])
+  nfc_p <- moment_to_lnorm(nfc_mean_samples[i], nfc_sd_samples[i])
+  br <- base_rate_samples[i]
+  
+  f_h_fc <- dtlnorm(hours, fc_p$meanlog, fc_p$sdlog)
+  f_h_nfc <- dtlnorm(hours, nfc_p$meanlog, nfc_p$sdlog)
+  
+  numerator <- f_h_fc * br
+  denominator <- f_h_fc * br + f_h_nfc * (1 - br)
+  denominator[denominator < 1e-30] <- 1e-30
+  
+  duration_results[, i] <- numerator / denominator
+}
+
+# Summarise
+dur_summary <- data.frame(
+  hours = hours,
+  median = apply(duration_results, 1, median),
+  lo = apply(duration_results, 1, quantile, 0.025),
+  hi = apply(duration_results, 1, quantile, 0.975)
+)
+
+# Threshold crossings
+thresholds <- c(0.013, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90)
+threshold_labels <- c("M&A (0.013)", "Fortescue (0.05)", "0.10", "0.25",
+                      "0.50", "0.75", "0.90")
+
+cat("DURATION THRESHOLD CROSSINGS (Overall):\n")
+for (j in seq_along(thresholds)) {
+  idx <- which(dur_summary$median >= thresholds[j])[1]
+  if (!is.na(idx)) {
+    cat(sprintf("  %s: %.1f hours\n", threshold_labels[j], dur_summary$hours[idx]))
+  }
+}
+
+# Population-specific duration curves
+pop_dur_curves <- list()
+for (pop in c("Prisoners", "Juveniles", "Community")) {
+  pop_samples <- sample(pop_posteriors[[pop]], n_mc, replace = TRUE)
+  pop_dur <- matrix(NA, nrow = length(hours), ncol = n_mc)
+  for (i in seq_len(n_mc)) {
+    fc_p <- moment_to_lnorm(fc_mean_samples[i], fc_sd_samples[i])
+    nfc_p <- moment_to_lnorm(nfc_mean_samples[i], nfc_sd_samples[i])
+    br <- pop_samples[i]
+    f_h_fc <- dtlnorm(hours, fc_p$meanlog, fc_p$sdlog)
+    f_h_nfc <- dtlnorm(hours, nfc_p$meanlog, nfc_p$sdlog)
+    num <- f_h_fc * br
+    den <- f_h_fc * br + f_h_nfc * (1 - br)
+    den[den < 1e-30] <- 1e-30
+    pop_dur[, i] <- num / den
+  }
+  pop_dur_curves[[pop]] <- data.frame(
+    hours = hours,
+    median = apply(pop_dur, 1, median),
+    population = pop
+  )
+}
+
+# Figure: Duration curves
+fig_dur_a <- ggplot(dur_summary, aes(x = hours)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "#e74c3c", alpha = 0.15) +
+  geom_line(aes(y = median), colour = "#e74c3c", linewidth = 1.2) +
+  geom_hline(yintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  geom_hline(yintercept = 0.05, linetype = "dotted", colour = "#e67e22", linewidth = 0.7) +
+  geom_hline(yintercept = median(overall_posterior), linetype = "dashed",
+             colour = "#27ae60", linewidth = 0.7) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  labs(x = "Interrogation Duration (hours)",
+       y = "P(FC | Interrogated, Duration)",
+       title = "(a) Overall Duration-Dependent Risk Curve") +
+  annotate("text", x = 18, y = 0.035, label = "M&A = 1.3%", colour = "purple", size = 3) +
+  annotate("text", x = 18, y = 0.07, label = "Fortescue = 5%", colour = "#e67e22", size = 3)
+
+pop_dur_df <- bind_rows(pop_dur_curves)
+pop_dur_colours <- c("Prisoners" = "#e74c3c", "Juveniles" = "#2ecc71", "Community" = "#3498db")
+
+fig_dur_b <- ggplot(pop_dur_df, aes(x = hours, y = median, colour = population)) +
+  geom_line(linewidth = 1) +
+  geom_line(data = dur_summary, aes(x = hours, y = median), colour = "grey40",
+            linewidth = 0.8, linetype = "dashed", inherit.aes = FALSE) +
+  geom_hline(yintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_colour_manual(values = pop_dur_colours, name = "Population") +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  labs(x = "Interrogation Duration (hours)",
+       y = "P(FC | Interrogated, Duration)",
+       title = "(b) By Population")
+
+fig_dur <- fig_dur_a + fig_dur_b
+ggsave("C:/Users/bmay/Desktop/R_fig_duration.png", fig_dur, width = 14, height = 6, dpi = 300)
+cat("\nSaved: R_fig_duration.png\n")
+
+# Zoomed critical zone (0-12 hours)
+dur_zoom <- dur_summary %>% filter(hours <= 12)
+
+# Find crossing points for annotation
+crossing_df <- data.frame(
+  threshold = c(0.013, 0.05, 0.25, 0.50),
+  label = c("M&A (1.3%)", "Fortescue (5%)", "25%", "50%")
+)
+crossing_df$hours <- sapply(crossing_df$threshold, function(t) {
+  idx <- which(dur_zoom$median >= t)[1]
+  if (!is.na(idx)) dur_zoom$hours[idx] else NA
+})
+
+fig_zoom <- ggplot(dur_zoom, aes(x = hours)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "#e74c3c", alpha = 0.15) +
+  geom_line(aes(y = median), colour = "#e74c3c", linewidth = 1.2) +
+  geom_hline(yintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.5) +
+  geom_hline(yintercept = 0.05, linetype = "dotted", colour = "#e67e22", linewidth = 0.5) +
+  geom_hline(yintercept = median(overall_posterior), linetype = "dashed",
+             colour = "#27ae60", linewidth = 0.5) +
+  geom_point(data = crossing_df %>% filter(!is.na(hours)),
+             aes(x = hours, y = threshold), colour = "black", size = 3) +
+  geom_text(data = crossing_df %>% filter(!is.na(hours)),
+            aes(x = hours + 0.3, y = threshold, label = sprintf("%s @ %.1fh", label, hours)),
+            hjust = 0, size = 3.2, fontface = "bold") +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  scale_x_continuous(breaks = 0:12) +
+  labs(x = "Interrogation Duration (hours)",
+       y = "P(FC | Interrogated, Duration)",
+       title = "Critical Transition Zone (0–12 hours)",
+       subtitle = "Annotated threshold crossings for false confession risk")
+
+ggsave("C:/Users/bmay/Desktop/R_fig_duration_zoom.png", fig_zoom, width = 10, height = 7, dpi = 300)
+cat("Saved: R_fig_duration_zoom.png\n")
+
+# ============================================================================
+# MODEL (ii): P(FC | Method) — Meta-Analytic Effect Sizes
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("MODEL (ii): P(FC | Method)\n")
+cat(rep("=", 70), "\n\n")
+
+# Effect sizes from Catlin et al. (2024) Campbell Systematic Review
+# OR: Accusatorial vs Information-Gathering for false confessions
+log_or_acc_vs_ig <- log(4.41)
+se_log_or_acc_ig <- (log(10.97) - log(1.77)) / (2 * 1.96)
+
+# OR: Information-Gathering vs Direct Questioning for false confessions
+log_or_ig_vs_dq <- log(0.69)
+se_log_or_ig_dq <- (log(1.77) - log(0.27)) / (2 * 1.96)
+
+# OR: Information-Gathering vs Direct Questioning for TRUE confessions
+log_or_tc_ig_vs_dq <- log(2.43)
+se_log_or_tc_ig_dq <- (log(4.59) - log(1.29)) / (2 * 1.96)
+
+# OR: Accusatorial vs Direct Questioning for TRUE confessions
+log_or_tc_acc_vs_dq <- log(0.55)
+se_log_or_tc_acc_dq <- (log(1.12) - log(0.27)) / (2 * 1.96)
+
+# Sample ORs with uncertainty
+or_acc_ig_samples <- exp(rnorm(N_SIM, log_or_acc_vs_ig, se_log_or_acc_ig))
+or_ig_dq_fc_samples <- exp(rnorm(N_SIM, log_or_ig_vs_dq, se_log_or_ig_dq))
+or_tc_ig_dq_samples <- exp(rnorm(N_SIM, log_or_tc_ig_vs_dq, se_log_or_tc_ig_dq))
+or_tc_acc_dq_samples <- exp(rnorm(N_SIM, log_or_tc_acc_vs_dq, se_log_or_tc_acc_dq))
+
+# Baseline: community posterior as proxy for direct questioning
+p_fc_dq <- sample(pop_posteriors[["Community"]], N_SIM, replace = TRUE)
+odds_fc_dq <- p_fc_dq / (1 - p_fc_dq)
+
+# Science-based (information-gathering)
+odds_fc_ig <- odds_fc_dq * or_ig_dq_fc_samples
+p_fc_ig <- pmin(pmax(odds_fc_ig / (1 + odds_fc_ig), 0), 1)
+
+# Accusatorial
+odds_fc_acc <- odds_fc_ig * or_acc_ig_samples
+p_fc_acc <- pmin(pmax(odds_fc_acc / (1 + odds_fc_acc), 0), 1)
+
+# True confessions
+p_tc_baseline <- 0.50
+odds_tc_dq <- p_tc_baseline / (1 - p_tc_baseline)
+
+odds_tc_ig <- odds_tc_dq * or_tc_ig_dq_samples
+p_tc_ig <- pmin(pmax(odds_tc_ig / (1 + odds_tc_ig), 0), 1)
+
+odds_tc_acc <- odds_tc_dq * or_tc_acc_dq_samples
+p_tc_acc <- pmin(pmax(odds_tc_acc / (1 + odds_tc_acc), 0), 1)
+
+# Diagnosticity ratios
+diag_ig <- p_tc_ig / pmax(p_fc_ig, 1e-10)
+diag_acc <- p_tc_acc / pmax(p_fc_acc, 1e-10)
+
+cat("FALSE CONFESSION RATES BY METHOD:\n")
+cat(sprintf("  Science-Based:     Median=%.4f  95%% CI %s\n", median(p_fc_ig), ci_text(p_fc_ig)))
+cat(sprintf("  Direct Quest.:     Median=%.4f  95%% CI %s\n", median(p_fc_dq), ci_text(p_fc_dq)))
+cat(sprintf("  Accusatorial:      Median=%.4f  95%% CI %s\n", median(p_fc_acc), ci_text(p_fc_acc)))
+cat(sprintf("  Ratio Acc/SB: %.2f\n", median(p_fc_acc) / median(p_fc_ig)))
+cat(sprintf("  P(Acc > SB): %.4f\n\n", mean(p_fc_acc > p_fc_ig)))
+
+cat("TRUE CONFESSION RATES BY METHOD:\n")
+cat(sprintf("  Science-Based:     Median=%.4f\n", median(p_tc_ig)))
+cat(sprintf("  Accusatorial:      Median=%.4f\n\n", median(p_tc_acc)))
+
+cat("DIAGNOSTICITY RATIOS (True:False):\n")
+cat(sprintf("  Science-Based:     Median=%.1f\n", median(diag_ig)))
+cat(sprintf("  Accusatorial:      Median=%.1f\n\n", median(diag_acc)))
+
+# Figure 6: Model (ii)
+fc_method_df <- data.frame(
+  value = c(p_fc_ig[1:50000], p_fc_dq[1:50000], p_fc_acc[1:50000]),
+  method = rep(c("Science-Based", "Direct Questioning", "Accusatorial"), each = 50000)
+) %>%
+  filter(value < quantile(value, 0.97))
+
+method_colours <- c("Science-Based" = "#27ae60", "Direct Questioning" = "#3498db",
+                    "Accusatorial" = "#e74c3c")
+
+fig6a <- ggplot(fc_method_df, aes(x = value, fill = method)) +
+  geom_density(alpha = 0.4, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = method_colours, name = "Method") +
+  scale_x_continuous(labels = percent_format()) +
+  labs(x = "P(FC | Method)", y = "Density",
+       title = "(a) False Confession Rates")
+
+tc_method_df <- data.frame(
+  value = c(p_tc_ig[1:50000], p_tc_acc[1:50000]),
+  method = rep(c("Science-Based", "Accusatorial"), each = 50000)
+)
+
+fig6b <- ggplot(tc_method_df, aes(x = value, fill = method)) +
+  geom_density(alpha = 0.4, colour = NA) +
+  scale_fill_manual(values = method_colours[c("Science-Based", "Accusatorial")], name = "Method") +
+  scale_x_continuous(labels = percent_format()) +
+  labs(x = "P(TC | Method)", y = "Density",
+       title = "(b) True Confession Rates")
+
+diag_df <- data.frame(
+  value = c(diag_ig[1:50000], diag_acc[1:50000]),
+  method = rep(c("Science-Based", "Accusatorial"), each = 50000)
+) %>% filter(value < quantile(value, 0.95))
+
+fig6c <- ggplot(diag_df, aes(x = value, fill = method)) +
+  geom_density(alpha = 0.4, colour = NA) +
+  scale_fill_manual(values = method_colours[c("Science-Based", "Accusatorial")], name = "Method") +
+  labs(x = "Diagnosticity (P[TC] / P[FC])", y = "Density",
+       title = "(c) Diagnosticity Ratios")
+
+fig6 <- fig6a + fig6b + fig6c + plot_layout(ncol = 3, guides = "collect") &
+  theme(legend.position = "bottom")
+ggsave("C:/Users/bmay/Desktop/R_fig6_model_ii.png", fig6, width = 16, height = 5.5, dpi = 300)
+cat("Saved: R_fig6_model_ii.png\n")
+
+# ============================================================================
+# MODEL (iii): P(FCWC | Method) — Conjoint Wrongful Conviction Risk
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("MODEL (iii): P(FCWC | Method)\n")
+cat(rep("=", 70), "\n\n")
+
+# P(WC | FC, Accusatorial) ~ Beta(13.1, 4.9) centred on 0.73
+p_wc_fc_acc <- rbeta(N_SIM, 13.1, 4.9)
+
+# Contamination reduction for science-based
+contamination_reduction <- runif(N_SIM, 0.3, 0.7)
+p_wc_fc_ig <- p_wc_fc_acc * contamination_reduction
+
+# Conjoint probabilities
+p_fcwc_acc <- p_fc_acc * p_wc_fc_acc
+p_fcwc_ig <- p_fc_ig * p_wc_fc_ig
+
+# Risk reduction
+risk_reduction <- (p_fcwc_acc - p_fcwc_ig) / pmax(p_fcwc_acc, 1e-10)
+
+# NNH
+nnh_acc <- 1 / pmax(p_fcwc_acc, 1e-10)
+nnh_ig <- 1 / pmax(p_fcwc_ig, 1e-10)
+
+cat("CONVICTION PROBABILITIES:\n")
+cat(sprintf("  P(WC|FC, Acc):  Median=%.4f  95%% CI %s\n", median(p_wc_fc_acc), ci_text(p_wc_fc_acc)))
+cat(sprintf("  P(WC|FC, SB):   Median=%.4f  95%% CI %s\n\n", median(p_wc_fc_ig), ci_text(p_wc_fc_ig)))
+
+cat("CONJOINT FCWC PROBABILITIES:\n")
+cat(sprintf("  P(FCWC|Acc):    Median=%.4f  95%% CI %s\n", median(p_fcwc_acc), ci_text(p_fcwc_acc)))
+cat(sprintf("  P(FCWC|SB):     Median=%.4f  95%% CI %s\n", median(p_fcwc_ig), ci_text(p_fcwc_ig)))
+cat(sprintf("  Risk ratio:     %.2f\n", median(p_fcwc_acc) / median(p_fcwc_ig)))
+cat(sprintf("  P(Acc > SB):    %.4f\n\n", mean(p_fcwc_acc > p_fcwc_ig)))
+
+cat("RISK REDUCTION:\n")
+cat(sprintf("  Median: %.1f%%  95%% CI %s\n\n",
+            median(risk_reduction) * 100,
+            sprintf("[%.1f%%, %.1f%%]", quantile(risk_reduction, 0.025) * 100,
+                    quantile(risk_reduction, 0.975) * 100)))
+
+cat("NUMBER NEEDED TO HARM:\n")
+cat(sprintf("  Accusatorial:   Median=%.0f interrogations per FCWC\n", median(nnh_acc)))
+cat(sprintf("  Science-Based:  Median=%.0f interrogations per FCWC\n\n", median(nnh_ig)))
+
+cat(sprintf("  Accusatorial / M&A: %.1fx\n", median(p_fcwc_acc) / 0.013))
+
+# Figure 7: Model (iii)
+fcwc_df <- data.frame(
+  value = c(p_fcwc_acc[1:50000], p_fcwc_ig[1:50000]),
+  method = rep(c("Accusatorial", "Science-Based"), each = 50000)
+) %>% filter(value < quantile(value, 0.97))
+
+fig7a <- ggplot(fcwc_df, aes(x = value, fill = method)) +
+  geom_density(alpha = 0.4, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = method_colours[c("Accusatorial", "Science-Based")], name = "Method") +
+  scale_x_continuous(labels = percent_format()) +
+  labs(x = "P(FCWC | Method)", y = "Density",
+       title = "(a) P(FCWC | Method)") +
+  annotate("text", x = 0.013 + 0.01, y = 1, label = "M&A ρ=1.0\n(0.013)",
+           colour = "purple", size = 3, hjust = 0)
+
+rr_df <- data.frame(value = risk_reduction[risk_reduction > 0 & risk_reduction < 1][1:50000])
+
+fig7b <- ggplot(rr_df, aes(x = value)) +
+  geom_density(fill = "#8e44ad", alpha = 0.4, colour = NA) +
+  geom_vline(xintercept = median(risk_reduction), linetype = "dashed", linewidth = 0.7) +
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1)) +
+  labs(x = "Risk Reduction (%)", y = "Density",
+       title = "(b) Risk Reduction: Accusatorial → Science-Based") +
+  annotate("text", x = median(risk_reduction) - 0.02, y = 0.5,
+           label = sprintf("Median = %.1f%%", median(risk_reduction) * 100),
+           hjust = 1, size = 3.5, fontface = "bold")
+
+fig7 <- fig7a + fig7b + plot_layout(widths = c(1.2, 1))
+ggsave("C:/Users/bmay/Desktop/R_fig7_model_iii.png", fig7, width = 14, height = 6, dpi = 300)
+cat("Saved: R_fig7_model_iii.png\n")
+
+# ============================================================================
+# SENSITIVITY ANALYSIS: Country-Level Disaggregation
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("SENSITIVITY ANALYSIS: By Country and Region\n")
+cat(rep("=", 70), "\n\n")
+
+# Country posteriors
+country_posteriors <- list()
+unique_countries <- unique(studies$country)
+
+for (cntry in unique_countries) {
+  sub <- studies %>% filter(country == cntry)
+  mu_c <- weighted.mean(sub$logit_fc, sub$weight)
+  tau_c <- ifelse(nrow(sub) > 1, max(sd(sub$logit_fc), 0.15), 0.30)
+  country_posteriors[[cntry]] <- expit(rnorm(N_SIM, mu_c, tau_c))
+}
+
+# Region posteriors
+region_posteriors <- list()
+for (reg in c("US", "Non-US")) {
+  sub <- studies %>% filter(region == reg)
+  mu_r <- weighted.mean(sub$logit_fc, sub$weight)
+  tau_r <- ifelse(nrow(sub) > 1, max(sd(sub$logit_fc), 0.15), 0.30)
+  region_posteriors[[reg]] <- expit(rnorm(N_SIM, mu_r, tau_r))
+}
+region_posteriors[["All"]] <- overall_posterior
+
+cat("COUNTRY POSTERIORS:\n")
+for (cntry in unique_countries) {
+  s <- country_posteriors[[cntry]]
+  sub <- studies %>% filter(country == cntry)
+  cat(sprintf("  %-15s k=%d  N=%6s  Median=%.4f  95%% CI %s  vs M&A: %.1fx\n",
+              cntry, nrow(sub), format(sum(sub$N), big.mark = ","),
+              median(s), ci_text(s), median(s) / 0.013))
+}
+
+cat("\nREGION POSTERIORS:\n")
+for (reg in c("US", "Non-US", "All")) {
+  s <- region_posteriors[[reg]]
+  cat(sprintf("  %-10s  Median=%.4f  95%% CI %s\n", reg, median(s), ci_text(s)))
+}
+
+cat(sprintf("\nUS / All ratio: %.2fx\n", median(region_posteriors[["US"]]) / median(region_posteriors[["All"]])))
+cat(sprintf("US / Non-US ratio: %.2fx\n", median(region_posteriors[["US"]]) / median(region_posteriors[["Non-US"]])))
+cat(sprintf("P(US > Non-US): %.4f\n", mean(region_posteriors[["US"]] > region_posteriors[["Non-US"]])))
+
+# Propagate through Models (ii) and (iii)
+cat("\nPROPAGATION THROUGH MODELS (ii) AND (iii):\n")
+
+propagate_models <- function(baseline_samples, label) {
+  p_dq <- sample(baseline_samples, N_SIM, replace = TRUE)
+  odds_dq <- p_dq / (1 - p_dq)
+  odds_ig <- odds_dq * or_ig_dq_fc_samples
+  p_ig <- pmin(pmax(odds_ig / (1 + odds_ig), 0), 1)
+  odds_acc <- odds_ig * or_acc_ig_samples
+  p_acc <- pmin(pmax(odds_acc / (1 + odds_acc), 0), 1)
+  
+  wc_acc <- rbeta(N_SIM, 13.1, 4.9)
+  cont_red <- runif(N_SIM, 0.3, 0.7)
+  wc_ig <- wc_acc * cont_red
+  
+  fcwc_acc <- p_acc * wc_acc
+  fcwc_ig <- p_ig * wc_ig
+  rr <- (fcwc_acc - fcwc_ig) / pmax(fcwc_acc, 1e-10)
+  
+  cat(sprintf("\n  --- %s ---\n", label))
+  cat(sprintf("    P(FC|SB):    %.4f %s\n", median(p_ig), ci_text(p_ig)))
+  cat(sprintf("    P(FC|Acc):   %.4f %s\n", median(p_acc), ci_text(p_acc)))
+  cat(sprintf("    P(FCWC|SB):  %.4f %s\n", median(fcwc_ig), ci_text(fcwc_ig)))
+  cat(sprintf("    P(FCWC|Acc): %.4f %s\n", median(fcwc_acc), ci_text(fcwc_acc)))
+  cat(sprintf("    Risk red.:   %.1f%% [%.1f%%, %.1f%%]\n",
+              median(rr) * 100, quantile(rr, 0.025) * 100, quantile(rr, 0.975) * 100))
+  cat(sprintf("    NNH Acc: %.0f   NNH SB: %.0f\n", median(1/pmax(fcwc_acc, 1e-10)),
+              median(1/pmax(fcwc_ig, 1e-10))))
+  cat(sprintf("    Acc / M&A: %.1fx\n", median(fcwc_acc) / 0.013))
+  
+  return(list(fcwc_acc = fcwc_acc, fcwc_ig = fcwc_ig, rr = rr))
+}
+
+res_us <- propagate_models(region_posteriors[["US"]], "US-only")
+res_nonus <- propagate_models(region_posteriors[["Non-US"]], "Non-US")
+res_all <- propagate_models(region_posteriors[["All"]], "All (N=11)")
+
+# Figure: Country sensitivity
+country_df <- bind_rows(lapply(names(country_posteriors), function(c) {
+  data.frame(country = c, value = country_posteriors[[c]][1:50000])
+})) %>% filter(value < quantile(value, 0.98))
+
+country_colours <- c("Iceland" = "#1f77b4", "7 European" = "#ff7f0e",
+                     "Scotland" = "#d62728", "Canada" = "#9467bd", "USA" = "#2ca02c")
+
+fig9a <- ggplot(country_df, aes(x = value, fill = country)) +
+  geom_density(alpha = 0.35, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = country_colours, name = "Country") +
+  scale_x_continuous(labels = percent_format(), limits = c(0, 0.6)) +
+  labs(x = "P(FC | Interrogated)", y = "Density",
+       title = "(a) P(FC | Interrogated) by Country")
+
+region_df <- bind_rows(
+  data.frame(region = "US", value = region_posteriors[["US"]][1:50000]),
+  data.frame(region = "Non-US", value = region_posteriors[["Non-US"]][1:50000]),
+  data.frame(region = "All", value = region_posteriors[["All"]][1:50000])
+) %>% filter(value < quantile(value, 0.98))
+
+region_colours <- c("US" = "#2ca02c", "Non-US" = "#1f77b4", "All" = "grey50")
+
+fig9b <- ggplot(region_df, aes(x = value, fill = region)) +
+  geom_density(alpha = 0.35, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = region_colours, name = "Region") +
+  scale_x_continuous(labels = percent_format(), limits = c(0, 0.6)) +
+  labs(x = "P(FC | Interrogated)", y = "Density",
+       title = "(b) US vs Non-US vs All")
+
+# Panel c: propagated FCWC
+fcwc_sens_df <- bind_rows(
+  data.frame(baseline = "US-only", value = res_us$fcwc_acc[1:50000]),
+  data.frame(baseline = "Non-US", value = res_nonus$fcwc_acc[1:50000]),
+  data.frame(baseline = "All", value = res_all$fcwc_acc[1:50000])
+) %>% filter(value < quantile(value, 0.95))
+
+baseline_colours <- c("US-only" = "#2ca02c", "Non-US" = "#1f77b4", "All" = "grey50")
+
+fig9c <- ggplot(fcwc_sens_df, aes(x = value, fill = baseline)) +
+  geom_density(alpha = 0.35, colour = NA) +
+  geom_vline(xintercept = 0.013, linetype = "dashed", colour = "purple", linewidth = 0.7) +
+  scale_fill_manual(values = baseline_colours, name = "Baseline") +
+  scale_x_continuous(labels = percent_format()) +
+  labs(x = "P(FCWC | Accusatorial)", y = "Density",
+       title = "(c) P(FCWC|Acc) by Baseline")
+
+fig9 <- fig9a + fig9b + fig9c + plot_layout(ncol = 3, guides = "collect") &
+  theme(legend.position = "bottom")
+ggsave("C:/Users/bmay/Desktop/R_fig9_sensitivity.png", fig9, width = 18, height = 6, dpi = 300)
+cat("\nSaved: R_fig9_sensitivity.png\n")
+
+# ============================================================================
+# EXCEL OUTPUT
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("GENERATING EXCEL WORKBOOK\n")
+cat(rep("=", 70), "\n\n")
+
+# Sheet 1: Input data
+sheet1 <- studies %>%
+  select(author, year, N, n_fc, p_fc, population, country, region)
+
+# Sheet 2: Model (i) posteriors
+sheet2 <- data.frame(
+  population = c("Overall", populations),
+  median = c(median(overall_posterior), sapply(pop_posteriors, median)),
+  ci_lo = c(quantile(overall_posterior, 0.025),
+            sapply(pop_posteriors, quantile, 0.025)),
+  ci_hi = c(quantile(overall_posterior, 0.975),
+            sapply(pop_posteriors, quantile, 0.975)),
+  vs_MA = c(median(overall_posterior) / 0.013,
+            sapply(pop_posteriors, function(x) median(x) / 0.013))
+)
+
+# Sheet 3: Model (ii)
+sheet3 <- data.frame(
+  method = c("Science-Based", "Direct Questioning", "Accusatorial"),
+  p_fc_median = c(median(p_fc_ig), median(p_fc_dq), median(p_fc_acc)),
+  p_fc_ci_lo = c(quantile(p_fc_ig, 0.025), quantile(p_fc_dq, 0.025), quantile(p_fc_acc, 0.025)),
+  p_fc_ci_hi = c(quantile(p_fc_ig, 0.975), quantile(p_fc_dq, 0.975), quantile(p_fc_acc, 0.975)),
+  p_tc_median = c(median(p_tc_ig), 0.50, median(p_tc_acc)),
+  diagnosticity = c(median(diag_ig), NA, median(diag_acc))
+)
+
+# Sheet 4: Model (iii)
+sheet4 <- data.frame(
+  method = c("Accusatorial", "Science-Based"),
+  p_fcwc_median = c(median(p_fcwc_acc), median(p_fcwc_ig)),
+  p_fcwc_ci_lo = c(quantile(p_fcwc_acc, 0.025), quantile(p_fcwc_ig, 0.025)),
+  p_fcwc_ci_hi = c(quantile(p_fcwc_acc, 0.975), quantile(p_fcwc_ig, 0.975)),
+  nnh = c(median(nnh_acc), median(nnh_ig)),
+  risk_reduction_pct = c(NA, median(risk_reduction) * 100),
+  vs_MA = c(median(p_fcwc_acc) / 0.013, median(p_fcwc_ig) / 0.013)
+)
+
+# Sheet 5: Country sensitivity
+sheet5 <- bind_rows(lapply(unique_countries, function(c) {
+  s <- country_posteriors[[c]]
+  sub <- studies %>% filter(country == c)
+  data.frame(
+    country = c, k = nrow(sub), N = sum(sub$N),
+    median = median(s),
+    ci_lo = quantile(s, 0.025), ci_hi = quantile(s, 0.975),
+    vs_MA = median(s) / 0.013
+  )
+}))
+
+write_xlsx(list(
+  "Input Data" = sheet1,
+  "Model i Posteriors" = sheet2,
+  "Model ii Method Comparison" = sheet3,
+  "Model iii FCWC" = sheet4,
+  "Country Sensitivity" = sheet5
+), path = "C:/Users/bmay/Desktop/R_three_models_data.xlsx")
+
+cat("Saved: R_three_models_data.xlsx\n")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+
+cat("\n", rep("=", 70), "\n")
+cat("ANALYSIS COMPLETE\n")
+cat(rep("=", 70), "\n\n")
+
+cat("KEY FINDINGS:\n")
+cat(sprintf("  Model (i):  P(FC|Interrogated) = %.4f  [%.1fx M&A]\n",
+            median(overall_posterior), median(overall_posterior) / 0.013))
+cat(sprintf("  Model (ii): P(FC|Accusatorial) = %.4f, P(FC|SB) = %.4f  [Ratio: %.1f]\n",
+            median(p_fc_acc), median(p_fc_ig), median(p_fc_acc) / median(p_fc_ig)))
+cat(sprintf("  Model (iii): P(FCWC|Acc) = %.4f  [%.1fx M&A], P(FCWC|SB) = %.4f\n",
+            median(p_fcwc_acc), median(p_fcwc_acc) / 0.013, median(p_fcwc_ig)))
+cat(sprintf("  Risk reduction: %.1f%%\n", median(risk_reduction) * 100))
+cat(sprintf("  NNH: %d (Acc) vs %d (SB)\n", round(median(nnh_acc)), round(median(nnh_ig))))
+cat(sprintf("  Duration: M&A exceeded at %.1f hours; coin-flip at ~5 hours\n\n",
+            dur_summary$hours[which(dur_summary$median >= 0.013)[1]]))
+
+cat("FILES GENERATED:\n")
+cat("  R_fig5_model_i.png          - Forest plot & population posteriors\n")
+cat("  R_fig_duration.png          - Duration-dependent risk curves\n")
+cat("  R_fig_duration_zoom.png     - Critical transition zone (0-12h)\n")
+cat("  R_fig6_model_ii.png         - Method comparison (FC, TC, diagnosticity)\n")
+cat("  R_fig7_model_iii.png        - Conjoint FCWC & risk reduction\n")
+cat("  R_fig9_sensitivity.png      - Country/region sensitivity analysis\n")
+cat("  R_three_models_data.xlsx    - Complete data workbook\n")
