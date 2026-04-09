@@ -32,15 +32,26 @@ library(truncdist)
 ### %error        : % WC
 ### nerror        : N WC
 ### weight        : evidence-type for weighting
-### independent   : ???
 ### shareddata    : data intersections between studies
 ### notes         : notes about data
 ### comments      : additional observations
 
-mar_dat <- readxl::read_xlsx("./data/Data_2026_02_11_cleaned.xlsx")
+mar_dat <- readxl::read_xlsx("./data/Data_2026_02_25_cleaned.xlsx")
+mar_dat <- mar_dat[which(mar_dat$include),]
 
 wc_dat <- mar_dat[which(mar_dat$Estimate == "Error"),]
+
 fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
+fc_dat <- fc_dat %>%
+  group_by(Ref, Location) %>%
+  mutate(p_est_ungr = p_est,
+         n_ungr = n,
+         N_ungr = N,
+         n = sum(n),
+         N = sum(N),
+         p_est = weighted.mean(p_est, N)) %>%
+  ungroup() %>%
+  filter(US == 0)
 
 #==============================================================================#
 # 3.1.1 Estimating False Confession - Wrongful Conviction (FCWC)           ====#
@@ -69,8 +80,8 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   
   ## formula
   wc_formula <- brmsformula(
-    pij ~ 1 + (1 | group),
-    phi ~ 1 + wij + (1 | group)
+    pij ~ 1 + (1 | Ref),
+    phi ~ 1 + wij + (1 | Ref)
   )
   
   ## priors
@@ -166,8 +177,8 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   
   ## Formula
   fc_formula <- brmsformula(
-    pij ~ 1 + (1 | group),
-    phi ~ 1 + wj + (1 | group)
+    pij ~ 1 + (1 | Ref),
+    phi ~ 1 + wj + (1 | Ref)
   )
     
   ## Priors

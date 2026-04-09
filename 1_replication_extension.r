@@ -32,15 +32,52 @@ library(truncdist)
 ### %error        : % WC
 ### nerror        : N WC
 ### weight        : evidence-type for weighting
-### independent   : ???
 ### shareddata    : data intersections between studies
 ### notes         : notes about data
 ### comments      : additional observations
 
-mar_dat <- readxl::read_xlsx("./data/Data_2026_02_11_cleaned.xlsx")
+mar_dat <- readxl::read_xlsx("./data/Data_2026_02_25_cleaned.xlsx")
+mar_dat <- mar_dat[which(mar_dat$include),]
 
 wc_dat <- mar_dat[which(mar_dat$Estimate == "Error"),]
+#wc_dat_vis <- wc_dat %>%
+#  group_by(Ref, Participants) %>%
+#  mutate(p_est_ungr = p_est,
+#         n_ungr = n,
+#         N_ungr = N,
+#         n = sum(n),
+#         N = sum(N),
+#         p_est = ifelse(!is.na(nbin), weighted.mean(p_est, nbin), p_est),
+#         collapsed = ifelse(!is.na(nbin), TRUE, FALSE))
+#wc_dat_vis[,c("Ref", "StudyYear", "DataYear", "weight","Location", "Participants", "N", "n", "p_est", "collapsed")] %>%
+#  unique() %>% 
+#  flextable() %>%
+#  theme_booktabs() %>%
+#  autofit() %>%
+#  set_caption("Table 1. Erroneous conviction rate (WC) estimation, revised data") %>%
+#  save_as_docx(path = "table1.docx")
+
 fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
+fc_dat <- fc_dat %>%
+  group_by(Ref, Location) %>%
+  mutate(p_est_ungr = p_est,
+         n_ungr = n,
+         N_ungr = N,
+         n = sum(n),
+         N = sum(N),
+         p_est = weighted.mean(p_est, N)) %>%
+  ungroup() %>%
+  filter(US == 0)
+
+#fc_dat[,c("Ref", "StudyYear", "DataYear", "weight","Location", "Participants", "N", "n", "p_est")] %>%
+#  unique() %>% 
+#  flextable() %>%
+#  theme_booktabs() %>%
+#  autofit() %>%
+#  set_caption("Table 2. False confession rate (WC) estimation, revised data") %>%
+#  save_as_docx(path = "table2.docx")
+
+
 
 #==============================================================================#
 # 3.1.1 Estimating False Confession - Wrongful Conviction (FCWC)           ====#
@@ -69,8 +106,8 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   
   ## formula
   wc_formula <- brmsformula(
-    pij ~ 1 + (1 | group),
-    phi ~ 1 + wij + (1 | group)
+    pij ~ 1 + (1 | Ref),
+    phi ~ 1 + wij + (1 | Ref)
   )
   
   ## priors
@@ -128,7 +165,8 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   
     ### posterior predictive checks
     pp_post <- posterior_predict(wc_model)
-    
+    pp_check(wc_model, type = "hist", ndraws = 11)
+
       #### Overlay densities
       ppc_dens_overlay(
         y = wc_dat$pij,
@@ -166,8 +204,8 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   
   ## Formula
   fc_formula <- brmsformula(
-    pij ~ 1 + (1 | group),
-    phi ~ 1 + wj + (1 | group)
+    pij ~ 1 + (1 | Ref),
+    phi ~ 1 + wj + (1 | Ref)
   )
     
   ## Priors
@@ -267,10 +305,10 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
   }
   
   sensitivity  <- sample_from_tiers(sens_ranges, 1000000)
-  specificity  <- sample_from_tiers(spec_ranges, 1000000)
+  #specificity  <- sample_from_tiers(spec_ranges, 1000000)
   
   ## Set false positive rate
-  false_positive_rate <- 1 - specificity
+  false_positive_rate <- 1 - sensitivity
   
   ## Calculate the conditional probability using Bayes' Theorem
   p_fcwc_given_t <- (sensitivity * fcwc_base_rate) /
@@ -373,7 +411,7 @@ fc_dat <- mar_dat[which(mar_dat$Estimate == "FCshare"),]
       labs(x = "Posterior Probability (%)",
            y = "Density",
            title = "Figure 1.",
-           subtitle = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios\n(replication and extension of Mourtgos and Adams, 2026 to include pretermit publications)",
+           subtitle = "Posterior Distribution of FCWC Risk Across All Tactic Scenarios\n(replication and extension of Mourtgos and Adams, 2026 to include neglected publications,\nand omit inappropriate publications)",
            caption = "Three Overall Posteriors: p = 0.5, 0.75, 1\nRed dashed = median; annotation = 95% HDI") +
       facet_wrap(~attribution,
                  ncol = 1, 

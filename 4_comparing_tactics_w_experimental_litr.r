@@ -11,8 +11,7 @@ library(bayestestR)
 library(bayesplot)
 library(purrr)
 library(truncdist)
-library(flextable)
-library(broom.mixed)
+library(loo)
 
 #==============================================================================#
 # Read Data                                                                ====#
@@ -47,6 +46,14 @@ exp_dat <- exp_dat %>%
                                     "IG")),
          Ref_complete = Ref,
          Ref = as.numeric(factor(Ref)))
+
+exp_dat[,c("Ref_complete", "Location", "Paradigm", "Tactic", "FC", "FD", "TC", "TD")] %>%
+  unique() %>%
+  flextable() %>%
+  theme_booktabs() %>%
+  autofit() %>%
+  set_caption("Table 3.") %>%
+  save_as_docx(path = "table3.docx")
 
 #==============================================================================#
 # Fit models                                                               ====#
@@ -392,6 +399,7 @@ ggplot(rbind(df_post, df_post_fd),
         legend.position = "top")
 dev.off()
 
+
 #-----------------------------------------------------------------------------#
 
 # Output results tables
@@ -471,8 +479,8 @@ set_flextable_defaults(font.family = "Times New Roman")
 flextable(full_tbl) %>%
   theme_booktabs() %>%
   autofit() %>%
-  set_caption("Table 1. Bayesian generalized linear mixed model (binomial link) estimating the posterior probability of false confession (FC) conditional on interrogation tactic") %>%
-  save_as_docx(path = "Table1.docx")
+  set_caption("Table 4. Bayesian generalized linear mixed model (binomial link) estimating the posterior probability of false confession (FC) conditional on interrogation tactic") %>%
+  save_as_docx(path = "table4.docx")
 
 
 # Model 2: Pr(FD|Tactic)
@@ -549,5 +557,18 @@ set_flextable_defaults(font.family = "Times New Roman")
 flextable(full_tbl) %>%
   theme_booktabs() %>%
   autofit() %>%
-  set_caption("Table 2. Bayesian generalized linear mixed model (binomial link) estimating the posterior probability of false denial (FD) conditional on interrogation tactic") %>%
-  save_as_docx(path = "Table2.docx")
+  set_caption("Table 5. Bayesian generalized linear mixed model (binomial link) estimating the posterior probability of false denial (FD) conditional on interrogation tactic") %>%
+  save_as_docx(path = "table5.docx")
+
+
+contrast1 <- as_draws_df(m1)
+quantile(contrast1$b_TacticAcc - contrast1$b_TacticIG, c(.025, .5, .975))
+mean(contrast1$b_TacticAcc - contrast1$b_TacticIG)
+2 * min(mean(contrast1$b_TacticAcc - contrast1$b_TacticIG > 0), 
+        mean(contrast1$b_TacticAcc - contrast1$b_TacticIG < 0))
+
+contrast2 <- as_draws_df(m2)
+quantile(contrast2$b_TacticAcc - contrast2$b_TacticIG, c(.025, .5, .975))
+mean(contrast2$b_TacticAcc - contrast2$b_TacticIG)
+2 * min(mean(contrast2$b_TacticAcc - contrast2$b_TacticIG > 0), 
+        mean(contrast2$b_TacticAcc - contrast2$b_TacticIG < 0))

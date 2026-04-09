@@ -114,7 +114,7 @@ fc_dat <- read.csv("./data/fc_data.csv")
       ### is the somewhat extreme zero-inflation (based on our replication).
       ### In our replication, this zero inflation is apparent in later posterior
       ### estimates, whereas they are not apparent in the publication we are
-      ### replicating.It does not affect many (or any) of our estimates, but
+      ### replicating. It does not affect many (or any) of our estimates, but
       ### it does not pass a "face validity" check. 
   
   ## posterior sampling
@@ -270,10 +270,10 @@ fc_dat <- read.csv("./data/fc_data.csv")
   }
   
   sensitivity  <- sample_from_tiers(sens_ranges, 1000000)
-  specificity  <- sample_from_tiers(spec_ranges, 1000000)
+  #specificity  <- sample_from_tiers(spec_ranges, 1000000)
   
   ## Set false positive rate
-  false_positive_rate <- 1 - specificity
+  false_positive_rate <- 1 - sensitivity
   
   ## Calculate the conditional probability using Bayes' Theorem
   p_fcwc_given_t <- (sensitivity * fcwc_base_rate) /
