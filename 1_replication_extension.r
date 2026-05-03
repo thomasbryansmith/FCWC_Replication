@@ -11,6 +11,7 @@ library(bayestestR)
 library(bayesplot)
 library(purrr)
 library(truncdist)
+library(interp)
 
 #==============================================================================#
 # Read Data                                                                ====#
@@ -32,6 +33,7 @@ library(truncdist)
 ### %error        : % WC
 ### nerror        : N WC
 ### weight        : evidence-type for weighting
+### independent   : ???
 ### shareddata    : data intersections between studies
 ### notes         : notes about data
 ### comments      : additional observations
@@ -263,35 +265,49 @@ fc_dat <- fc_dat %>%
   
 # 3.1.1.3 Joint probability base rate
   
-  draws_wc <- as_draws_df(wc_model)$b_Intercept %>%
-    plogis() %>%
-    sample(size = 1e6, replace = TRUE)
+  ## Confirmed method for constructing base rate
+  n_sim <- 1000000
   
-  draws_fc <- as_draws_df(fc_model)$b_Intercept %>%
-    plogis() %>%
-    sample(size = 1e6, replace = TRUE)
+  wc_mu_draws <- posterior_epred(wc_model, ndraws = n_sim)
+  fc_mu_draws <- posterior_epred(fc_model, ndraws = n_sim)
   
-  ## Calculate FCWC base rate
-  fcwc_base_rate <- draws_wc * draws_fc
+  w_wc <- model.frame(wc_model)$wij
+  w_wc <- w_wc / sum(w_wc)
+  
+  w_fc  <- model.frame(fc_model)$wj
+  w_fc  <- w_fc / sum(w_fc)
+  
+  wc_hat <- as.numeric(wc_mu_draws %*% w_wc)
+  fc_hat <- as.numeric(fc_mu_draws %*% w_fc)
+  
+  combined_df <- tibble(
+    ErrorRate     = wc_hat,
+    FalseConfPrev = fc_hat,
+    FCWC_BaseRate = wc_hat * fc_hat
+  )
+  
+  fcwc_base_rate <- combined_df$FCWC_BaseRate
   
   ## Descriptives for FCWC base rate
   mean(fcwc_base_rate)
   median(fcwc_base_rate)
   quantile(fcwc_base_rate, c(0.025, 0.975))
   
+  
 #==============================================================================#    
   
 # 3.2 FCWC probabilities given a single interrogation technique 
   
   ## Set plausible levels for interrogation
+  ll <- 0.1
+  ul <- 0.9
   sens_ranges <- list(
-    low      = c(0.1, 0.3),
-    moderate = c(0.4, 0.6),
-    high     = c(0.7, 0.9)
+    low      = c(ll,                     ll + (((ul-ll)/3) * 1)),
+    moderate = c(ll + (((ul-ll)/3) * 1), ll + (((ul-ll)/3) * 2)),
+    high     = c(ll + (((ul-ll)/3) * 2), ll + (((ul-ll)/3) * 3))
   )
-  
   spec_ranges <- sens_ranges
-    
+  
     ### This represents the probability that a single interrogation
     ### technique within the class of potentially problematic
     ### tactics coincides with FCWC.
@@ -305,15 +321,32 @@ fc_dat <- fc_dat %>%
   }
   
   sensitivity  <- sample_from_tiers(sens_ranges, 1000000)
-  #specificity  <- sample_from_tiers(spec_ranges, 1000000)
+  specificity  <- sample_from_tiers(spec_ranges, 1000000)
   
-  ## Set false positive rate
-  false_positive_rate <- 1 - sensitivity
   
+    ## M&A original binned, discrete
+    #bucket_vals <- list(low = seq(.1,.3, by = .1),
+    #                    moderate = seq(.4,.6, by = .1),
+    #                    high = seq(.7,.9, by = .1))
+    
+    #sens_lvl <- sample(names(bucket_vals), n_sim, TRUE)
+    #spec_lvl <- sample(names(bucket_vals), n_sim, TRUE)
+    
+    #sensitivity <- map_dbl(sens_lvl, ~ sample(bucket_vals[[.x]], 1))
+    #specificity <- map_dbl(spec_lvl, ~ sample(bucket_vals[[.x]], 1))
+    
+    #names(sensitivity) <- case_when(sensitivity < 0.33 ~ "Low",
+    #                                sensitivity < 0.66 ~ "Moderate",
+    #                                TRUE               ~ "High")
+    #names(specificity) <- case_when(specificity < 0.33 ~ "Low",
+    #                                specificity < 0.66 ~ "Moderate",
+    #                                TRUE               ~ "High")
+  
+    
   ## Calculate the conditional probability using Bayes' Theorem
   p_fcwc_given_t <- (sensitivity * fcwc_base_rate) /
     ((sensitivity * fcwc_base_rate) +
-       (false_positive_rate * (1 - fcwc_base_rate)))
+       ((1 - specificity) * (1 - fcwc_base_rate)))
   
   ## Describe posterior conditional probability distribution
   summary(p_fcwc_given_t)
@@ -343,10 +376,10 @@ fc_dat <- fc_dat %>%
     })
     
     ### Re-estimate the conditional probability for each level of attribution
-    p_fcwc_given_t_scaled <- lapply(fcwc_scaled, function(base_rate) {
-      (sensitivity * base_rate) /
-        ((sensitivity * base_rate) +
-           (false_positive_rate * (1 - base_rate)))
+    p_fcwc_given_t_scaled <- lapply(fcwc_scaled, function(fcwc_base_rate) {
+      (sensitivity * fcwc_base_rate) /
+        ((sensitivity * fcwc_base_rate) +
+           ((1 - specificity) * (1 - fcwc_base_rate)))
     })
     
     ### Describe the posterior conditional probability by level of attribution
@@ -389,18 +422,21 @@ fc_dat <- fc_dat %>%
     group_HDI <- gdat %>%
       group_by(attribution) %>%
       summarise(
-        lower_hdi = hdi(fcwc_given_t, ci = 0.95)[[2]],
-        upper_hdi = hdi(fcwc_given_t, ci = 0.95)[[3]])
+        lower_hdi = bayestestR::hdi(fcwc_given_t, ci = 0.95)[[2]],
+        upper_hdi = bayestestR::hdi(fcwc_given_t, ci = 0.95)[[3]])
     
     ### Merge labelling data
     labs_dat <- left_join(group_medians, group_density, by = "attribution")
     labs_dat <- left_join(labs_dat, group_HDI, by = "attribution")
     
     ### Replicate figure 1
-    png("Fig1_replication_w_mary_data.png", width = 1000, height = 750, type = "cairo")
+    #png("Fig1_replication_w_mary_data.png", width = 1000, height = 750, type = "cairo")
     ggplot(gdat, aes(x=fcwc_given_t, fill = attribution)) +
       geom_density(color = NA,
                    alpha = 0.8) +
+      #geom_histogram(color = NA,
+      #               alpha = 0.8,
+      #               bins = 200) +
       scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
                          labels = c("0%", "1%", "2%", "3%", "4%", "5%",
                                     "6%", "7%", "8%", "9%", "10%"),
@@ -439,4 +475,110 @@ fc_dat <- fc_dat %>%
                                       margin = margin(t = 10, b = 10, 
                                                       unit = "pt")),
             legend.position = "none")
+    #dev.off()
+  
+    
+    ### Scatter plot
+    png("Fig3_posterior_by_loglik.png", width = 1000, height = 450, type = "cairo")
+    data.frame(prior = fcwc_base_rate,
+               se = sensitivity,
+               sp = specificity) %>%
+      slice_sample(n = 10000) %>%
+      mutate(
+        sens_bin = cut(se, breaks = c(0, .33, .66, 1)),
+        posterior = (se * prior) /
+            (se * prior + (1 - sp) * (1 - prior)),
+        lr_pos = se / (1 - sp)
+      ) %>%
+      ggplot(aes(x = lr_pos, y = posterior)) +
+      geom_point(aes(color = se,
+                     size = 1 - sp),
+                 alpha = 0.3,
+                 stroke = NA) +
+      labs(
+        x = expression(log~bgroup("(", over( "Pr(T|FCWC)", "Pr⁡(T│¬FCWC"), ")")),
+        y = "Pr(FCWC|T)",
+        color = "Pr(T|FCWC)",
+        size = "Pr⁡(T│¬FCWC)"
+      ) +
+      scale_color_gradient(low = "skyblue",
+                          high = "red") +
+      scale_size(transform = "reverse",
+                 range = c(0.1, 3)) +
+      scale_x_log10() +
+      guides(colour = guide_colourbar(barwidth = 1, barheight = 10)) +
+      theme_classic() + 
+      theme(text = element_text(size = 27, family = "serif"),
+            axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+            axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+            plot.title = element_text(size = 26,
+                                      margin = margin(b = 5, unit = "pt")),
+            plot.subtitle = element_text(size = 23, 
+                                         margin = margin(b = 20, unit = "pt")),
+            plot.caption = element_text(size = 17, hjust = 0, 
+                                        margin = margin(t = 20, unit = "pt")),
+            strip.text = element_text(size = 23,
+                                      margin = margin(t = 10, b = 10, 
+                                                      unit = "pt")),
+            legend.position = "right")
     dev.off()
+    
+    
+    ### Contour plot
+    interp_data <- data.frame(prior = fcwc_base_rate,
+               se = sensitivity,
+               sp = 1 - specificity) %>%
+      mutate(
+        posterior = (se * prior) /
+          (se * prior + sp * (1 - prior))
+      ) %>%
+      slice_sample(n = 100000) 
+    
+    interp_data <- with(interp_data,
+      interp::interp(
+        x = sp,
+        y = se,
+        z = posterior,
+        duplicate = "mean",
+        nx = 100, 
+        ny = 100
+        ))
+
+    grid_df <- expand.grid(
+      sp = interp_data$x,
+      se = interp_data$y
+    )
+    
+    grid_df$posterior <- as.vector(interp_data$z)
+    
+    png("Fig3_posterior_contours.png", width = 1000, height = 800, type = "cairo")
+      ggplot(grid_df,
+             aes(x = sp, y = se, z = posterior)) +
+        geom_contour_filled() +
+        labs(
+          x = "Pr⁡(T│¬FCWC)",
+          y = "Pr(T|FCWC)",
+          fill = "Pr(FCWC|T)"
+        ) +
+        scale_fill_viridis_d(option = "magma") +
+        scale_x_continuous(breaks = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+                           limits = c(0.09, 0.91),
+                           expand = c(0, 0)) +
+        scale_y_continuous(breaks = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+                           limits = c(0.09, 0.91),
+                           expand = c(0, 0)) +
+        theme_minimal() + 
+        theme(text = element_text(size = 27, family = "serif"),
+              axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+              axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+              plot.title = element_text(size = 26,
+                                        margin = margin(b = 5, unit = "pt")),
+              plot.subtitle = element_text(size = 23, 
+                                           margin = margin(b = 20, unit = "pt")),
+              plot.caption = element_text(size = 17, hjust = 0, 
+                                          margin = margin(t = 20, unit = "pt")),
+              strip.text = element_text(size = 23,
+                                        margin = margin(t = 10, b = 10, 
+                                                        unit = "pt")),
+              legend.position = "right")
+     dev.off()

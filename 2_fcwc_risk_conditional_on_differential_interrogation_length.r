@@ -11,6 +11,7 @@ library(bayestestR)
 library(bayesplot)
 library(purrr)
 library(truncdist)
+library(ggh4x)
 
 #==============================================================================#
 # Read Data                                                                ====#
@@ -32,6 +33,7 @@ library(truncdist)
 ### %error        : % WC
 ### nerror        : N WC
 ### weight        : evidence-type for weighting
+### independent   : ???
 ### shareddata    : data intersections between studies
 ### notes         : notes about data
 ### comments      : additional observations
@@ -441,25 +443,47 @@ fc_dat <- fc_dat %>%
                 legend.key.spacing.y = unit(1.0, "cm"))
         dev.off()
         
+        
+#==============================================================================#
+        
+        
     ### Visualize posterior distributions for each hour of interrogation
       #### Draw posteriors for P(FCWC|H)
       hour_ranges <- c(1.6, 16.23)
       
+      posterior_fcwc_given_H_mc_fi <- function(h, pi, mu1, sigma1, mu0, sigma0,
+                                               n_mc = 5000, upper = 48){
+        
+        L1 <- mc_likelihood_H(h, n_mc, mu1, sigma1, upper)
+        L0 <- mc_likelihood_H(h, n_mc, mu0, sigma0, upper)
+        
+        return(c("h" = h,
+                 "pi" = pi,
+                 "mu1" = mu1,
+                 "sigma1" = sigma1,
+                 "mu0" = mu0,
+                 "sigma0" = sigma0,
+                 "L1" = L1,
+                 "L0" = L0,
+                 "posterior" = (L1 * pi) / (L1 * pi + L0 * (1 - pi))))
+      }
+      
       posterior_draws <- lapply(hour_ranges, function(h){
-        sapply(sample(pi_fcwc, 1000), function(pi_s) {
-          posterior_fcwc_given_H_mc(
+        lapply(sample(pi_fcwc, 5000), function(pi_s) {
+          posterior_fcwc_given_H_mc_fi(
             h = h,
             pi = pi_s,
             mu1 = mu_1,  sigma1 = sigma_1,
             mu0 = mu_0,  sigma0 = sigma_0
           )
         })})
+      posterior_draws <- lapply(posterior_draws, function(x) as.data.frame(do.call(rbind, x)))
+      posterior_draws <- do.call("rbind", posterior_draws)
       
       #### Visualization
-      gdat <- data.frame("NTact" = factor(rep(hour_ranges, each = length(posterior_draws[[1]])),
-                                          labels = paste0(hour_ranges, " Hours")),
-                         "posterior" = unlist(posterior_draws))
-      
+      gdat <- posterior_draws
+      gdat$NTact <- paste(gdat$h, "hours")
+
       ### Calculate group medians
       group_medians <- gdat %>%
         group_by(NTact) %>%
@@ -481,6 +505,7 @@ fc_dat <- fc_dat %>%
       ### Merge labelling data
       labs_dat <- left_join(group_medians, group_density, by = "NTact")
       labs_dat <- left_join(labs_dat, group_HDI, by = "NTact")
+      labs_dat$dens_x[which(labs_dat$NTact=="16.23 hours")] <- 0.5
       
       png("Fig2b_Interrogation_intensity_figure.png", 1000, 500, type = "cairo")
         ggplot(gdat, aes(x = posterior)) +
@@ -492,7 +517,12 @@ fc_dat <- fc_dat %>%
              subtitle = "Posterior distribution of FCWC risk by length of interrogation",
              fill = "Tactics",
              caption = "") + 
-        facet_wrap(~NTact, scale = "free") +
+        facet_wrap2(~NTact, scale = "free") +
+        facetted_pos_scales(
+            x = list(
+              NTact == "16.23 hours" ~ scale_x_continuous(limits = c(0, 0.5)) # Second plot
+            )
+          ) +
         geom_vline(data = labs_dat, 
                      aes(xintercept = median), 
                      color = "red", linetype = "dashed", size = 1) +
@@ -517,6 +547,10 @@ fc_dat <- fc_dat %>%
       dev.off()
 
       
+#==============================================================================#
+      
+      
+      ## GAM distribution visualization
       hour_ranges <- 1:48
       posterior_draws <- lapply(hour_ranges, function(h){
         sapply(sample(pi_fcwc, 1000), function(pi_s) {
@@ -553,4 +587,113 @@ fc_dat <- fc_dat %>%
               plot.caption = element_text(size = 17, hjust = 0, 
                                           margin = margin(t = 20, unit = "pt")),
               legend.key.spacing.y = unit(1.0, "cm"))
+      dev.off()
+      
+      
+      
+#==============================================================================#
+      
+      
+      ### Visualize posterior distributions at 1.6 and 16 hours across sensitivity and specificity
+      hour_ranges <- c(1.6, 6, 12, 16.23)
+      
+      posterior_fcwc_given_H_mc_fi <- function(h, pi, mu1, sigma1, mu0, sigma0,
+                                            n_mc = 5000, upper = 48){
+        
+        L1 <- mc_likelihood_H(h, n_mc, mu1, sigma1, upper)
+        L0 <- mc_likelihood_H(h, n_mc, mu0, sigma0, upper)
+        
+        return(c("h" = h,
+                 "pi" = pi,
+                 "mu1" = mu1,
+                 "sigma1" = sigma1,
+                 "mu0" = mu0,
+                 "sigma0" = sigma0,
+                 "L1" = L1,
+                 "L0" = L0,
+                 "posterior" = (L1 * pi) / (L1 * pi + L0 * (1 - pi))))
+      }
+      
+      posterior_draws <- lapply(hour_ranges, function(h){
+        lapply(sample(pi_fcwc, 5000), function(pi_s) {
+          posterior_fcwc_given_H_mc_fi(
+            h = h,
+            pi = pi_s,
+            mu1 = mu_1,  sigma1 = sigma_1,
+            mu0 = mu_0,  sigma0 = sigma_0
+          )
+        })})
+      posterior_draws <- lapply(posterior_draws, function(x) as.data.frame(do.call(rbind, x)))
+      posterior_draws <- do.call("rbind", posterior_draws)
+      
+      library(interp)
+      
+      interp_data <- posterior_draws %>%
+        mutate(
+          posterior = (L1 * pi) / (L1 * pi + L0 * (1 - pi))
+        )
+      
+      interp_data <- split(interp_data, interp_data$h)
+      
+      interp_data <- lapply(interp_data, function(x) with(x,
+                                                        interp::interp(
+                                                          x = L0,
+                                                          y = L1,
+                                                          z = posterior,
+                                                          duplicate = "mean",
+                                                          nx = 100, 
+                                                          ny = 100
+                                                        )))
+      
+      grid_df <- list()
+      for(i in seq_along(interp_data)){
+        grid_df[[i]] <- expand.grid(sp = interp_data[[i]]$x,
+                                    se = interp_data[[i]]$y)
+        grid_df[[i]]$posterior <- as.vector(interp_data[[i]]$z)
+        grid_df[[i]]$posterior_odds <- grid_df[[i]]$posterior / (1 - grid_df[[i]]$posterior)
+        grid_df[[i]]$posterior_log_odds <- log(grid_df[[i]]$posterior / (1 - grid_df[[i]]$posterior))
+        grid_df[[i]]$h <- names(interp_data[i])
+        grid_df[[i]]$f_lab <- paste0(names(interp_data[i]), " hours")
+      }
+      
+      l_lots <- c(-9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1)
+      u_lots <- c(-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2)
+      
+      grid_df <- do.call("rbind", grid_df)
+      grid_df$h <- factor(grid_df$h, levels = c(1.6, 6, 12, 16.23))
+      grid_df$f_lab <- factor(grid_df$f_lab, levels = c("1.6 hours",
+                                                        "6 hours",
+                                                        "12 hours",
+                                                        "16.23 hours"))
+      
+      png("Fig4c_posterior_contours.png", width = 1100, height = 800, type = "cairo")
+      ggplot(grid_df,
+             aes(x = sp, y = se, z = posterior_log_odds)) +
+        geom_contour_filled() +
+        labs(
+          x = expression(Specificity ~~~~~ italic(f)(h ~ "|" ~ theta["\u00ACFCWC"])),
+          y = expression(Sensitivity ~~~~~ italic(f)(h ~ "|" ~ theta[FCWC])),
+          fill = expression(Pr(FCWC ~ "|" ~ H == h))
+        ) +
+        scale_fill_viridis_d(option = "turbo",
+                             labels = paste0("(", signif(exp(l_lots) / (1 + exp(l_lots)), 2), 
+                                             ",", signif(exp(u_lots) / (1 + exp(u_lots)), 2), "]")
+                             ) +
+        facet_wrap(~ f_lab, scale = "free") +
+        theme_classic() + 
+        theme(text = element_text(size = 27, family = "serif"),
+              axis.title.y = element_text(margin = margin(r = 10, unit = "pt")),
+              axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+              plot.title = element_text(size = 26,
+                                        margin = margin(b = 5, unit = "pt")),
+              plot.subtitle = element_text(size = 23, 
+                                           margin = margin(b = 20, unit = "pt")),
+              plot.caption = element_text(size = 17, hjust = 0, 
+                                          margin = margin(t = 20, unit = "pt")),
+              strip.text = element_text(size = 23,
+                                        margin = margin(t = 10, b = 10, 
+                                                        unit = "pt")),
+              plot.margin = margin(30, 30, 30, 30, "pt"),
+              legend.position = "bottom",
+              legend.title = element_text(margin = margin(r = 20)))
       dev.off()

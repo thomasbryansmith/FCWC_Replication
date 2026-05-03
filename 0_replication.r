@@ -1,6 +1,7 @@
 #==============================================================================#
 
 # load packages (simulations) ====
+library(tidyverse)
 library(dplyr)
 library(brms)
 library(tidyr)
@@ -11,6 +12,11 @@ library(bayestestR)
 library(bayesplot)
 library(purrr)
 library(truncdist)
+library(scales)
+library(HDInterval)
+library(ggrepel)
+library(viridis)
+
 
 #==============================================================================#
 # Read Data                                                                ====#
@@ -45,22 +51,19 @@ fc_dat <- read.csv("./data/fc_data.csv")
 
 # 3.1.1.1. Conviction Error Rate ====
 
-  ## Define function(s)
-  min_max_scale <- function(x) {
-    (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
-  }
-  
   ## Rescale p_est, create weight variable(s)
   epsilon <- 1e-6
   wc_dat <- wc_dat %>%
     mutate(
-      recency = min_max_scale(Period),
-      pij = pmin(pmax(p_est, epsilon), 1 - epsilon),
+      pij = ifelse(p_est == 0, 0.0001, p_est),
+      recency = rescale(Period, to = c(0.1, 1)),
       type_wt = ifelse(Type == "Survey", 0.9, 
                        ifelse(Type == "Observational", 1, 
                               0.8)),
       wij = recency * type_wt * (n_bin / N),  # total weight
     )
+  
+#==============================================================================#
   
   ## formula
   wc_formula <- brmsformula(
@@ -70,21 +73,18 @@ fc_dat <- read.csv("./data/fc_data.csv")
   
   ## priors
   wc_priors <- c(
-    ### Grand mean prior
-    prior(normal(logit(0.03), 0.75), class = "Intercept"),
+    prior(normal(logit(0.03), 0.75), class = "Intercept", dpar = "mu"),
+    prior(exponential(2), class = "sd", dpar = "mu"),
     
-    ### Precision fixed effects
     prior(normal(0, 1), class = "Intercept", dpar = "phi"),
     prior(normal(0, 1), class = "b", dpar = "phi"),
-    
-    ### Random-effect SDs
-    prior(exponential(2), class = "sd"),
     prior(exponential(2), class = "sd", dpar = "phi")
   )
   
   ## family
-  wc_family <- Beta(link = "logit",
-                 link_phi = "log")
+  wc_family <- Beta()
+  
+#==============================================================================#
   
     ### prior predictive check
     prior_check <- brm(
@@ -93,30 +93,57 @@ fc_dat <- read.csv("./data/fc_data.csv")
       prior   = wc_priors,
       family  = wc_family,
       sample_prior = "only",
-      chains  = 4,
+      chains  = 2,
       iter    = 2000,
-      warmup  = 0,
-      seed    = 32608
+      warmup  = 500,
+      seed    = 58
     )
     
-    pp_prior <- posterior_predict(prior_check)
+    pp_prior <- posterior_predict(prior_check, ndraws = 2000)
+    pp_prior <- stack(as.data.frame(t(pp_prior[1:2000,])))$values
+
+      ### Note:
+      ### We are unclear why this distribution was trimmed, or why 
+      ### Mourtgos & Adams (2026) fit a null model here. Prior predictive
+      ### checks are intended to test the question "if my modeling assumptions
+      ### and priors were true, would I generate plausible data?" This question
+      ### cannot be answered if you fit a null model. Additionally, you cannot
+      ### trim inconvenient non-conforming extreme values when the goal 
+      ### is to ensure the accuracy of a generative model. 
     
       ### visualize
-      stack(as.data.frame(t(pp_prior[1:200,]))) %>%
-        ggplot(aes(x = values, fill = ind)) +
-        geom_histogram() + 
-        theme(legend.position = "none")
+      ggplot() +
+        
+        geom_histogram(aes(x = wc_dat$p_est),
+                       bins = 15, fill = "grey70", color = "black", alpha = 0.5) +
+        
+        geom_density(aes(x = pp_prior), 
+                       fill = "green", alpha = 0.4) +
+        
+        labs(title = "Prior Predictive vs Actual: Conviction Error Rate",
+             x = "Conviction Error Rate", y = "Density") +
+        
+        theme_minimal()
       
       ### Note: 
       ### Mourtgos & Adams (2026) report "that the induced distribution spans
       ### the full empirical range while concentrating probability mass between
-      ### 0 and 0.25, where most estimates lie". However, what they fail to mention
-      ### is the somewhat extreme zero-inflation (based on our replication).
+      ### 0 and 0.25, where most estimates lie". However, what they do not seem 
+      ### to mention is the somewhat extreme zero-inflation (based on our replication).
       ### In our replication, this zero inflation is apparent in later posterior
       ### estimates, whereas they are not apparent in the publication we are
       ### replicating. It does not affect many (or any) of our estimates, but
       ### it does not pass a "face validity" check. 
+      
+      ### I am wondering if maybe there is a more accurate set of priors, 
+      ### or more appropriate family of distributions that will not inflate
+      ### the zeros to this degree?
+      
+      ### Regardless, prior predictive checks we have performed have been
+      ### largely okay - given the limited data used to inform simulation.
   
+#==============================================================================#
+      
   ## posterior sampling
   wc_model <- brm(
     data    = wc_dat,
@@ -127,11 +154,11 @@ fc_dat <- read.csv("./data/fc_data.csv")
     iter    = 251000,
     warmup = 1000,
     cores   = 8,
-    seed    = 32608,
-    control = list(adapt_delta = 0.995)
+    seed    = 58,
+    control = list(adapt_delta=.99, max_treedepth=15)
   )
   
-    ### posterior predictive checks
+    ### revised prior predictive checks
     pp_post <- posterior_predict(wc_model)
     
       #### Overlay densities
@@ -159,8 +186,8 @@ fc_dat <- read.csv("./data/fc_data.csv")
   ## Rescale p_est, introduce weight variable(s)
   fc_dat <- fc_dat %>%
     mutate(
-      recency = min_max_scale(Period),
-      pij = pmin(pmax(p_est, epsilon), 1 - epsilon),
+      recency = rescale(Period, to = c(0.1, 1)),
+      pij = p_est,
       type_wt = ifelse(Type == "Survey", 0.9, 
                        ifelse(Type == "Observational", 1, 
                               0.8)),
@@ -175,15 +202,11 @@ fc_dat <- read.csv("./data/fc_data.csv")
     
   ## Priors
   fc_priors <- c(
-    ### Grand mean prior
-    prior(normal(logit(0.15), 0.50), class = "Intercept"),
+    prior(normal(logit(0.15), 0.5), class = "Intercept", dpar = "mu"),
+    prior(exponential(2), class = "sd", dpar = "mu"),
     
-    ### Precision fixed effects
-    prior(normal(0, 1), class = "Intercept", dpar = "phi"),
-    prior(normal(0, 1), class = "b", dpar = "phi"),
-    
-    ### Random-effect SDs
-    prior(exponential(2), class = "sd"),
+    prior(normal(log(30), 0.5), class = "Intercept", dpar = "phi"),
+    prior(normal(0, 0.5), class = "b", dpar = "phi"),
     prior(exponential(2), class = "sd", dpar = "phi")
   )
   
@@ -201,7 +224,8 @@ fc_dat <- read.csv("./data/fc_data.csv")
     iter = 251000,
     warmup = 1000,
     cores = 8,
-    control = list(adapt_delta = 0.995)
+    control = list(adapt_delta=.99, max_treedepth=15),
+    seed = 58
   )
   
   ## posterior predictive checks
@@ -228,38 +252,63 @@ fc_dat <- read.csv("./data/fc_data.csv")
   
 # 3.1.1.3 Joint probability base rate
   
-  draws_wc <- as_draws_df(wc_model)$b_Intercept %>%
-    plogis() %>%
-    sample(size = 1e6, replace = TRUE)
+  #draws_wc <- as_draws_df(wc_model)$b_Intercept %>%
+  #  plogis() %>%
+  #  sample(size = 1e6, replace = TRUE)
   
-  draws_fc <- as_draws_df(fc_model)$b_Intercept %>%
-    plogis() %>%
-    sample(size = 1e6, replace = TRUE)
+  #draws_fc <- as_draws_df(fc_model)$b_Intercept %>%
+  #  plogis() %>%
+  #  sample(size = 1e6, replace = TRUE)
   
   ## Calculate FCWC base rate
-  fcwc_base_rate <- draws_wc * draws_fc
+  #fcwc_base_rate <- draws_wc * draws_fc
+  
+
+  ## Confirmed method for constructing base rate
+  n_sim <- 1000000
+  
+  wc_mu_draws <- posterior_epred(wc_model, ndraws = n_sim)
+  fc_mu_draws <- posterior_epred(fc_model, ndraws = n_sim)
+  
+  w_wc <- model.frame(wc_model)$wij
+  w_wc <- w_wc / sum(w_wc)
+  
+  w_fc  <- model.frame(fc_model)$wj
+  w_fc  <- w_fc / sum(w_fc)
+  
+  wc_hat <- as.numeric(wc_mu_draws %*% w_wc)
+  fc_hat <- as.numeric(fc_mu_draws %*% w_fc)
+  
+  combined_df <- tibble(
+    ErrorRate     = wc_hat,
+    FalseConfPrev = fc_hat,
+    FCWC_BaseRate = wc_hat * fc_hat
+  )
+  
+  fcwc_base_rate <- combined_df$FCWC_BaseRate
   
   ## Descriptives for FCWC base rate
   mean(fcwc_base_rate)
   median(fcwc_base_rate)
   quantile(fcwc_base_rate, c(0.025, 0.975))
   
-#==============================================================================#    
-  
+#==============================================================================#
+
 # 3.2 FCWC probabilities given a single interrogation technique 
   
   ## Set plausible levels for interrogation
+  ll <- 0.1
+  ul <- 0.9
   sens_ranges <- list(
-    low      = c(0.1, 0.3),
-    moderate = c(0.4, 0.6),
-    high     = c(0.7, 0.9)
+    low      = c(ll,                     ll + (((ul-ll)/3) * 1)),
+    moderate = c(ll + (((ul-ll)/3) * 1), ll + (((ul-ll)/3) * 2)),
+    high     = c(ll + (((ul-ll)/3) * 2), ll + (((ul-ll)/3) * 3))
   )
-  
   spec_ranges <- sens_ranges
-    
-    ### This represents the probability that a single interrogation
-    ### technique within the class of potentially problematic
-    ### tactics coincides with FCWC.
+  
+  ### This represents the probability that a single interrogation
+  ### technique within the class of potentially problematic
+  ### tactics coincides with FCWC.
   
   ## Define sensitivity and specificity
   sample_from_tiers <- function(ranges, n) {
@@ -270,22 +319,38 @@ fc_dat <- read.csv("./data/fc_data.csv")
   }
   
   sensitivity  <- sample_from_tiers(sens_ranges, 1000000)
-  #specificity  <- sample_from_tiers(spec_ranges, 1000000)
+  specificity  <- sample_from_tiers(spec_ranges, 1000000)
   
-  ## Set false positive rate
-  false_positive_rate <- 1 - sensitivity
+  
+    ## M&A original binned, discrete
+    bucket_vals <- list(low = seq(.1,.3, by = .1),
+                        moderate = seq(.4,.6, by = .1),
+                        high = seq(.7,.9, by = .1))
+    
+    sens_lvl <- sample(names(bucket_vals), n_sim, TRUE)
+    spec_lvl <- sample(names(bucket_vals), n_sim, TRUE)
+    
+    sensitivity <- map_dbl(sens_lvl, ~ sample(bucket_vals[[.x]], 1))
+    specificity <- map_dbl(spec_lvl, ~ sample(bucket_vals[[.x]], 1))
+    
+    names(sensitivity) <- case_when(sensitivity < 0.33 ~ "Low",
+                                    sensitivity < 0.66 ~ "Moderate",
+                                    TRUE               ~ "High")
+    names(specificity) <- case_when(specificity < 0.33 ~ "Low",
+                                    specificity < 0.66 ~ "Moderate",
+                                    TRUE               ~ "High")
+  
   
   ## Calculate the conditional probability using Bayes' Theorem
   p_fcwc_given_t <- (sensitivity * fcwc_base_rate) /
     ((sensitivity * fcwc_base_rate) +
-       (false_positive_rate * (1 - fcwc_base_rate)))
+       ((1 - specificity) * (1 - fcwc_base_rate)))
   
   ## Describe posterior conditional probability distribution
   summary(p_fcwc_given_t)
   
   median(p_fcwc_given_t)
   quantile(p_fcwc_given_t, c(0.025, 0.5, 0.975))
-  
   
 #==============================================================================#
   
@@ -309,10 +374,10 @@ fc_dat <- read.csv("./data/fc_data.csv")
     })
     
     ### Re-estimate the conditional probability for each level of attribution
-    p_fcwc_given_t_scaled <- lapply(fcwc_scaled, function(base_rate) {
-      (sensitivity * base_rate) /
-        ((sensitivity * base_rate) +
-           (false_positive_rate * (1 - base_rate)))
+    p_fcwc_given_t_scaled <- lapply(fcwc_scaled, function(fcwc_base_rate) {
+      (sensitivity * fcwc_base_rate) /
+        ((sensitivity * fcwc_base_rate) +
+           ((1 - specificity) * (1 - fcwc_base_rate)))
     })
     
     ### Describe the posterior conditional probability by level of attribution
@@ -355,8 +420,8 @@ fc_dat <- read.csv("./data/fc_data.csv")
     group_HDI <- gdat %>%
       group_by(attribution) %>%
       summarise(
-        lower_hdi = hdi(fcwc_given_t, ci = 0.95)[[2]],
-        upper_hdi = hdi(fcwc_given_t, ci = 0.95)[[3]])
+        lower_hdi = bayestestR::hdi(fcwc_given_t, ci = 0.95)[[2]],
+        upper_hdi = bayestestR::hdi(fcwc_given_t, ci = 0.95)[[3]])
     
     ### Merge labelling data
     labs_dat <- left_join(group_medians, group_density, by = "attribution")
